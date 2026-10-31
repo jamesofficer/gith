@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -13,23 +14,58 @@ type call struct {
 	stdin string
 }
 
-// fakeGH answers gh calls with replies in order and records each call.
+// fakeGH answers each type of gh call with its replies in order, and
+// records each call. Calls can come from more than one goroutine.
 type fakeGH struct {
-	replies []string
+	mu      sync.Mutex
+	replies map[string][]string
 	calls   []call
 }
 
-func (f *fakeGH) run(_ context.Context, stdin []byte, args ...string) ([]byte, error) {
-	f.calls = append(f.calls, call{args: args, stdin: string(stdin)})
+// callType is "list" or "threads" for GraphQL calls, "rest" for other API
+// calls, and the gh command, such as "pr", for all other calls.
+func callType(args []string) string {
+	if args[0] != "api" {
+		return args[0]
+	}
 
-	if len(f.replies) == 0 {
+	if args[1] != "graphql" {
+		return "rest"
+	}
+
+	if strings.Contains(strings.Join(args, " "), "reviewThreads") {
+		return "threads"
+	}
+
+	return "list"
+}
+
+func (f *fakeGH) run(_ context.Context, stdin []byte, args ...string) ([]byte, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, call{args: args, stdin: string(stdin)})
+	kind := callType(args)
+	replies := f.replies[kind]
+
+	if len(replies) == 0 {
 		return nil, fmt.Errorf("no reply for gh %v", args)
 	}
 
-	reply := f.replies[0]
-	f.replies = f.replies[1:]
+	f.replies[kind] = replies[1:]
 
-	return []byte(reply), nil
+	return []byte(replies[0]), nil
+}
+
+func (f *fakeGH) callsOf(kind string) []call {
+	var out []call
+
+	for _, c := range f.calls {
+		if callType(c.args) == kind {
+			out = append(out, c)
+		}
+	}
+
+	return out
 }
 
 func (c call) value(flag, key string) string {
@@ -84,10 +120,11 @@ func TestNewCLIRejectsBadLimit(t *testing.T) {
 }
 
 func TestEnterpriseRepoFromDirectoryUsesItsHost(t *testing.T) {
-	gh := &fakeGH{replies: []string{
-		`{"name": "widgets", "owner": {"login": "acme"}, "url": "https://ghe.example.com/acme/widgets"}`,
-		page(1, 1, false),
-		`{"number": 1}`,
+	gh := &fakeGH{replies: map[string][]string{
+		"repo":    {`{"name": "widgets", "owner": {"login": "acme"}, "url": "https://ghe.example.com/acme/widgets"}`},
+		"list":    {page(1, 1, false)},
+		"pr":      {`{"number": 1}`},
+		"threads": {threads(false)},
 	}}
 	c := testCLI(t, "", 30, gh)
 
@@ -99,14 +136,18 @@ func TestEnterpriseRepoFromDirectoryUsesItsHost(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := c.Detail(context.Background(), KindIssue, 1); err != nil {
+	if _, err := c.Detail(context.Background(), KindPull, 1); err != nil {
 		t.Fatal(err)
 	}
 
-	list, detail := strings.Join(gh.calls[1].args, " "), strings.Join(gh.calls[2].args, " ")
+	for _, kind := range []string{"list", "threads"} {
+		if args := strings.Join(gh.callsOf(kind)[0].args, " "); !strings.Contains(args, "--hostname ghe.example.com") {
+			t.Fatalf("%s call did not use the host: %s", kind, args)
+		}
+	}
 
-	if !strings.Contains(list, "--hostname ghe.example.com") || !strings.Contains(detail, "-R ghe.example.com/acme/widgets") {
-		t.Fatalf("calls did not use the host:\n%s\n%s", list, detail)
+	if args := strings.Join(gh.callsOf("pr")[0].args, " "); !strings.Contains(args, "-R ghe.example.com/acme/widgets") {
+		t.Fatalf("pr call did not use the host: %s", args)
 	}
 }
 
@@ -125,7 +166,7 @@ func page(first, count int, more bool) string {
 }
 
 func TestListPagesWithoutRepeats(t *testing.T) {
-	gh := &fakeGH{replies: []string{page(500, 100, true), page(400, 50, true)}}
+	gh := &fakeGH{replies: map[string][]string{"list": {page(500, 100, true), page(400, 50, true)}}}
 	items, err := testCLI(t, "acme/widgets", 150, gh).List(context.Background(), KindPull)
 
 	if err != nil {
@@ -152,7 +193,7 @@ func TestListPagesWithoutRepeats(t *testing.T) {
 }
 
 func TestListStopsAtTheLastPage(t *testing.T) {
-	gh := &fakeGH{replies: []string{page(5, 5, false)}}
+	gh := &fakeGH{replies: map[string][]string{"list": {page(5, 5, false)}}}
 	items, err := testCLI(t, "acme/widgets", 30, gh).List(context.Background(), KindIssue)
 
 	if err != nil {
@@ -165,15 +206,16 @@ func TestListStopsAtTheLastPage(t *testing.T) {
 }
 
 func TestListReadsCountsDraftsAndLabels(t *testing.T) {
-	gh := &fakeGH{replies: []string{`{"data": {"repository": {"items": {
+	gh := &fakeGH{replies: map[string][]string{"list": {`{"data": {"repository": {"items": {
 		"nodes": [{
 			"number": 8, "title": "Add a setting", "state": "OPEN", "isDraft": true,
 			"updatedAt": "2026-10-30T15:18:41Z", "author": null,
 			"labels": {"nodes": [{"name": "bug", "color": "ff5451"}]},
-			"comments": {"totalCount": 4}
+			"comments": {"totalCount": 4},
+			"assignees": {"nodes": [{"login": "lin"}, {"login": "sam"}]}
 		}],
 		"pageInfo": {"hasNextPage": false, "endCursor": null}
-	}}}}`}}
+	}}}}`}}}
 	items, err := testCLI(t, "acme/widgets", 30, gh).List(context.Background(), KindPull)
 
 	if err != nil {
@@ -189,10 +231,14 @@ func TestListReadsCountsDraftsAndLabels(t *testing.T) {
 	if len(item.Labels) != 1 || item.Labels[0] != (Label{Name: "bug", Color: "ff5451"}) {
 		t.Fatalf("labels = %+v", item.Labels)
 	}
+
+	if !slices.Equal(item.Assignees, []string{"lin", "sam"}) {
+		t.Fatalf("assignees = %v", item.Assignees)
+	}
 }
 
 func TestListOfMissingRepoFails(t *testing.T) {
-	gh := &fakeGH{replies: []string{`{"data": {"repository": null}}`}}
+	gh := &fakeGH{replies: map[string][]string{"list": {`{"data": {"repository": null}}`}}}
 
 	if _, err := testCLI(t, "acme/gone", 30, gh).List(context.Background(), KindIssue); err == nil {
 		t.Fatal("expected an error")
@@ -200,9 +246,10 @@ func TestListOfMissingRepoFails(t *testing.T) {
 }
 
 func TestDetailPutsReviewsInTheThread(t *testing.T) {
-	gh := &fakeGH{replies: []string{`{
+	gh := &fakeGH{replies: map[string][]string{"threads": {threads(false)}, "pr": {`{
 		"number": 12, "title": "Fix the timer", "state": "OPEN",
 		"author": {"login": "ada"}, "body": "The last set is skipped.",
+		"assignees": [{"login": "lin"}],
 		"headRefName": "fix-timer", "baseRefName": "main", "reviewDecision": "APPROVED",
 		"additions": 4, "deletions": 1, "changedFiles": 2,
 		"comments": [
@@ -214,7 +261,7 @@ func TestDetailPutsReviewsInTheThread(t *testing.T) {
 			{"author": {"login": "lin"}, "body": "", "state": "COMMENTED", "submittedAt": "2026-10-30T11:30:00Z"},
 			{"author": {"login": "lin"}, "body": "Draft", "state": "PENDING"}
 		]
-	}`}}
+	}`}}}
 	detail, err := testCLI(t, "acme/widgets", 30, gh).Detail(context.Background(), KindPull, 12)
 
 	if err != nil {
@@ -227,17 +274,21 @@ func TestDetailPutsReviewsInTheThread(t *testing.T) {
 		got = append(got, post.Author+":"+post.Body+post.Review)
 	}
 
-	if want := []string{"grace:First", "lin:APPROVED", "grace:Third"}; !slices.Equal(got, want) {
+	if want := []string{"grace:First", "lin:APPROVED", "sam:Use a constant.", "grace:Third"}; !slices.Equal(got, want) {
 		t.Fatalf("thread = %v", got)
 	}
 
 	if detail.Comments != 2 || detail.Head != "fix-timer" || detail.Review != "APPROVED" || detail.ChangedFiles != 2 {
 		t.Fatalf("detail = %+v", detail)
 	}
+
+	if !slices.Equal(detail.Assignees, []string{"lin"}) {
+		t.Fatalf("assignees = %v", detail.Assignees)
+	}
 }
 
 func TestCommentPostsTheBodyToTheItem(t *testing.T) {
-	gh := &fakeGH{replies: []string{`{"body": "Ship it.", "user": {"login": "ada"}, "created_at": "2026-10-31T03:04:05Z"}`}}
+	gh := &fakeGH{replies: map[string][]string{"rest": {`{"body": "Ship it.", "user": {"login": "ada"}, "created_at": "2026-10-31T03:04:05Z"}`}}}
 	post, err := testCLI(t, "acme/widgets", 30, gh).Comment(context.Background(), 9, "  Ship it.\n")
 
 	if err != nil {
@@ -264,5 +315,68 @@ func TestCommentRejectsEmpty(t *testing.T) {
 
 	if len(gh.calls) != 0 {
 		t.Fatal("an empty comment was sent")
+	}
+}
+
+// threads is one review thread page. The thread on timer.go has one reply,
+// one pending reply, and one reply that was not loaded.
+func threads(more bool) string {
+	return fmt.Sprintf(`{"data": {"repository": {"pullRequest": {"reviewThreads": {
+		"nodes": [{
+			"path": "timer.go", "line": null, "originalLine": 85, "isResolved": true, "isOutdated": true,
+			"comments": {"totalCount": 4, "nodes": [
+				{"author": {"login": "sam"}, "body": "Use a constant.", "createdAt": "2026-10-30T11:10:00Z", "state": "SUBMITTED", "diffHunk": "@@ -1 +1 @@\n-a\n+b"},
+				{"author": {"login": "ada"}, "body": "Done.", "createdAt": "2026-10-30T13:00:00Z", "state": "SUBMITTED"},
+				{"author": {"login": "sam"}, "body": "Not sent", "createdAt": "2026-10-30T14:00:00Z", "state": "PENDING"}
+			]}
+		}],
+		"pageInfo": {"hasNextPage": %t, "endCursor": "threads-2"}
+	}}}}}`, more)
+}
+
+func TestCodeCommentKeepsItsPlaceAndReplies(t *testing.T) {
+	gh := &fakeGH{replies: map[string][]string{
+		"pr":      {`{"number": 12, "comments": [], "reviews": []}`},
+		"threads": {threads(true), threads(false)},
+	}}
+	detail, err := testCLI(t, "acme/widgets", 30, gh).Detail(context.Background(), KindPull, 12)
+
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(detail.Thread) != 2 {
+		t.Fatalf("thread = %+v", detail.Thread)
+	}
+
+	post := detail.Thread[0]
+	code := post.Code
+
+	if post.Author != "sam" || post.Body != "Use a constant." || code == nil {
+		t.Fatalf("post = %+v", post)
+	}
+
+	if code.Path != "timer.go" || code.Line != 85 || !code.Resolved || !code.Outdated || code.Hunk != "@@ -1 +1 @@\n-a\n+b" {
+		t.Fatalf("code = %+v", code)
+	}
+
+	if len(code.Replies) != 1 || code.Replies[0].Author != "ada" || code.Replies[0].Body != "Done." || code.MoreReplies != 1 {
+		t.Fatalf("replies = %+v, more = %d", code.Replies, code.MoreReplies)
+	}
+
+	if after := gh.callsOf("threads")[1].value("-f", "after"); after != "threads-2" {
+		t.Fatalf("second thread page after = %q", after)
+	}
+}
+
+func TestIssueDetailDoesNotLoadCodeComments(t *testing.T) {
+	gh := &fakeGH{replies: map[string][]string{"issue": {`{"number": 3}`}}}
+
+	if _, err := testCLI(t, "acme/widgets", 30, gh).Detail(context.Background(), KindIssue, 3); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(gh.calls) != 1 {
+		t.Fatalf("calls = %+v", gh.calls)
 	}
 }

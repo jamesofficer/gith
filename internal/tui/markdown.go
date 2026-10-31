@@ -10,36 +10,79 @@ import (
 	"github.com/jamesofficer/gith/internal/github"
 )
 
+// renderedPost is the markdown of one post, rendered for the terminal.
+type renderedPost struct {
+	body string
+
+	// replies holds the replies to a code comment, rendered narrower to fit
+	// the indent.
+	replies []string
+}
+
 // renderPosts renders the description, then each post of the thread.
-func renderPosts(detail github.Detail, width int, dark bool) ([]string, error) {
-	renderer, err := glamour.NewTermRenderer(
-		glamour.WithStyles(markdownStyle(dark, width)),
-		glamour.WithWordWrap(width),
-	)
+func renderPosts(detail github.Detail, width int, dark bool) ([]renderedPost, error) {
+	post, err := markdownRenderer(width, dark)
 
 	if err != nil {
 		return nil, err
 	}
 
-	texts := []string{orElse(detail.Body, "_No description._")}
+	reply, err := markdownRenderer(max(1, width-replyIndent), dark)
 
-	for _, post := range detail.Thread {
-		texts = append(texts, orElse(post.Body, "_No comment._"))
+	if err != nil {
+		return nil, err
 	}
 
-	posts := make([]string, 0, len(texts))
+	description, err := render(post, detail.Body, "_No description._")
 
-	for _, text := range texts {
-		out, err := renderer.Render(text)
+	if err != nil {
+		return nil, err
+	}
+
+	posts := []renderedPost{{body: description}}
+
+	for _, p := range detail.Thread {
+		body, err := render(post, p.Body, "_No comment._")
 
 		if err != nil {
 			return nil, err
 		}
 
-		posts = append(posts, strings.TrimSpace(out))
+		rendered := renderedPost{body: body}
+
+		if p.Code != nil {
+			for _, r := range p.Code.Replies {
+				text, err := render(reply, r.Body, "_No comment._")
+
+				if err != nil {
+					return nil, err
+				}
+
+				rendered.replies = append(rendered.replies, text)
+			}
+		}
+
+		posts = append(posts, rendered)
 	}
 
 	return posts, nil
+}
+
+func markdownRenderer(width int, dark bool) (*glamour.TermRenderer, error) {
+	return glamour.NewTermRenderer(
+		glamour.WithStyles(markdownStyle(dark, width)),
+		glamour.WithWordWrap(width),
+	)
+}
+
+func render(renderer *glamour.TermRenderer, text, empty string) (string, error) {
+	out, err := renderer.Render(orElse(text, empty))
+
+	if err != nil {
+		return "", err
+	}
+
+	return strings.TrimSpace(out), nil
 }
 
 func orElse(text, fallback string) string {

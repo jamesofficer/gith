@@ -28,6 +28,7 @@ func (m Model) startCompose() (Model, tea.Cmd) {
 	box.ShowLineNumbers = false
 	box.Placeholder = "Write a comment"
 	box.EndOfBufferCharacter = ' '
+	box.KeyMap.InsertNewline.SetKeys(append(box.KeyMap.InsertNewline.Keys(), "shift+enter")...)
 	box.SetStyles(m.commentStyles())
 	box.SetValue(m.drafts[m.open.key])
 	loaded.compose = &compose{box: box}
@@ -151,7 +152,7 @@ func (m Model) commentBox(c *compose) string {
 func (m Model) composeFooter(c *compose) string {
 	colors := m.tone()
 	dim := lipgloss.NewStyle().Foreground(colors.muted)
-	hint := dim.Render("enter new line   ctrl+s send   esc close")
+	hint := dim.Render("enter or shift+enter new line   ctrl+s send   esc close")
 
 	if c.sending {
 		hint = m.spin.View() + dim.Render(" Sending…")

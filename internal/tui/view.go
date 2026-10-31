@@ -139,11 +139,7 @@ func (m Model) listBody(height int) string {
 
 func (m Model) row(item github.Item, selected bool, numW, width int, now time.Time) string {
 	colors := m.tone()
-
-	if width <= 0 {
-		return ""
-	}
-
+	muted := lipgloss.NewStyle().Foreground(colors.muted)
 	bar := "  "
 
 	if selected {
@@ -153,38 +149,27 @@ func (m Model) row(item github.Item, selected bool, numW, width int, now time.Ti
 	num := padRight(lipgloss.NewStyle().Foreground(colors.accent).Bold(selected).Render(
 		fmt.Sprintf("#%d", item.Number),
 	), numW)
-	age := padLeft(ago(item.UpdatedAt, now), 4)
-	comments := commentChip(item.Comments)
-	commentW := lipgloss.Width(comments)
-	fixed := lipgloss.Width(bar) + numW + 2 + 2 + lipgloss.Width(age)
+	var tail []string
 
-	if commentW > 0 {
-		fixed += commentW + 2
+	for _, part := range []string{m.assigneeBadge(item.Assignees), commentChip(item.Comments)} {
+		if part != "" {
+			tail = append(tail, part)
+		}
 	}
 
-	middle := width - fixed
+	tail = append(tail, muted.Render(padLeft(ago(item.UpdatedAt, now), 4)))
+	end := strings.Join(tail, "  ")
+	middle := width - lipgloss.Width(bar+num+"  "+"  "+end)
 
 	if middle < 8 {
-		plain := bar + num + "  " + item.Title
-
-		if commentW > 0 {
-			plain += "  " + comments
-		}
-
-		return ansi.Truncate(plain+"  "+age, width, "…")
+		return fitLine(bar+num+"  "+item.Title+"  "+end, width)
 	}
 
 	labels := fitLabels(item.Labels, item.Draft, middle/2, colors.muted)
-	labelW := lipgloss.Width(labels)
-	titleW := middle
+	titleW := middle - lipgloss.Width(labels) - 2
 
-	if labelW > 0 {
-		titleW = middle - labelW - 2
-	}
-
-	if titleW < 8 {
+	if labels == "" || titleW < 8 {
 		labels = ""
-		labelW = 0
 		titleW = middle
 	}
 
@@ -196,17 +181,26 @@ func (m Model) row(item github.Item, selected bool, numW, width int, now time.Ti
 
 	line := bar + num + "  " + title
 
-	if labelW > 0 {
+	if labels != "" {
 		line += "  " + labels
 	}
 
-	if commentW > 0 {
-		line += "  " + comments
+	return fitLine(line+"  "+end, width)
+}
+
+// assigneeBadge names the first assignee and counts the others.
+func (m Model) assigneeBadge(assignees []string) string {
+	if len(assignees) == 0 {
+		return ""
 	}
 
-	line += "  " + lipgloss.NewStyle().Foreground(colors.muted).Render(age)
+	badge := "@" + ansi.Truncate(assignees[0], 12, "…")
 
-	return fitLine(line, width)
+	if len(assignees) > 1 {
+		badge += fmt.Sprintf(" +%d", len(assignees)-1)
+	}
+
+	return lipgloss.NewStyle().Foreground(m.tone().accent).Render(badge)
 }
 
 func numberWidth(items []github.Item) int {
@@ -254,11 +248,9 @@ func (m Model) hints() (string, string) {
 		return "↑↓ move   ←→ switch   enter open   o browser   r refresh   q quit", right
 	}
 
-	switch state := m.open.state.(type) {
+	switch m.open.state.(type) {
 	case *detailLoaded:
-		right := fmt.Sprintf("%d/%d", state.index+1, len(state.posts))
-
-		return "↑↓ thread   c comment   o browser   r refresh   esc back   q quit", right
+		return "↑↓ thread   c comment   o browser   r refresh   esc back   q quit", ""
 
 	case *detailFailed:
 		return "r retry   esc back   q quit", ""

@@ -225,6 +225,23 @@ func lineWith(content, text string) string {
 	return ""
 }
 
+// postTop is the top border of the post frame, the second frame on screen.
+func postTop(view string) string {
+	opens := 0
+
+	for _, line := range strings.Split(view, "\n") {
+		if strings.HasPrefix(line, "╭") {
+			opens++
+		}
+
+		if opens == 2 {
+			return line
+		}
+	}
+
+	return ""
+}
+
 func assertFillsScreen(t *testing.T, m Model) {
 	t.Helper()
 	content := m.View().Content
@@ -281,7 +298,7 @@ func TestOpenItemShowsOnePostAtATime(t *testing.T) {
 		t.Fatalf("description =\n%s", description)
 	}
 
-	if !strings.Contains(description, "1/2") || !strings.Contains(description, "1 comment") {
+	if !strings.HasPrefix(postTop(description), "╭─ 1 of 2 ─") || !strings.Contains(description, "1 comment") {
 		t.Fatalf("thread position or count missing:\n%s", description)
 	}
 
@@ -289,7 +306,7 @@ func TestOpenItemShowsOnePostAtATime(t *testing.T) {
 	m = press(t, m, key(tea.KeyDown))
 	comment := screen(m)
 
-	if !strings.Contains(comment, "Please do.") || !strings.Contains(comment, "2/2") || strings.Contains(comment, "cache works") {
+	if !strings.Contains(comment, "Please do.") || !strings.HasPrefix(postTop(comment), "╭─ 2 of 2 ─") || strings.Contains(comment, "cache works") {
 		t.Fatalf("comment =\n%s", comment)
 	}
 
@@ -452,9 +469,10 @@ func TestCommentBoxTakesAllTypedKeys(t *testing.T) {
 	m = press(t, m, key(tea.KeyLeft))
 	m = typeText(t, m, "Hi")
 	m = press(t, m, key(tea.KeyEnter))
-	m, cmd := update(t, m, char('q'))
+	m = press(t, m, char('q'))
+	m, cmd := update(t, m, tea.KeyPressMsg{Code: tea.KeyEnter, Mod: tea.ModShift})
 
-	if quits(cmd) || m.open == nil || m.compose().box.Value() != "Hi\nq" {
+	if quits(cmd) || m.open == nil || m.compose().box.Value() != "Hi\nq\n" {
 		t.Fatalf("keys left the comment box: %q\n%s", m.compose().box.Value(), screen(m))
 	}
 }
@@ -472,7 +490,7 @@ func TestSendComment(t *testing.T) {
 				t.Fatalf("posted = %+v", src.posted)
 			}
 
-			if m.compose() != nil || !strings.Contains(view, "Ship it.") || !strings.Contains(view, "3/3") || !strings.Contains(view, "2 comments") {
+			if m.compose() != nil || !strings.Contains(view, "Ship it.") || !strings.HasPrefix(postTop(view), "╭─ 3 of 3 ─") || !strings.Contains(view, "2 comments") {
 				t.Fatalf("sent view =\n%s", view)
 			}
 
@@ -584,5 +602,87 @@ func TestRowStaysOnOneScreenLine(t *testing.T) {
 
 	if !strings.Contains(plain, "…") || !strings.Contains(plain, "💬 9") || !strings.Contains(plain, "2h") {
 		t.Fatalf("row = %q", plain)
+	}
+}
+
+func TestArrowsInItemDoNotSwitchTab(t *testing.T) {
+	m := openCacheIssue(t, newSource())
+	m = press(t, m, key(tea.KeyRight))
+	m = press(t, m, key(tea.KeyLeft))
+
+	if m.open == nil || m.kind != github.KindIssue || !strings.Contains(screen(m), "cache works") {
+		t.Fatalf("arrows left the item:\n%s", screen(m))
+	}
+}
+
+func TestCodeCommentShowsItsPlaceAndIndentedReplies(t *testing.T) {
+	src := newSource()
+	detail := cacheIssue()
+	detail.Thread = []github.Post{{
+		Author:    "sam",
+		Body:      "Use a constant.",
+		CreatedAt: when,
+		Code: &github.CodeThread{
+			Path:        "internal/timer.go",
+			Line:        85,
+			Hunk:        "@@ -80,6 +80,6 @@\n context\n-old := 1\n+next := 2",
+			Resolved:    true,
+			Replies:     []github.Reply{{Author: "ada", Body: "Done.", CreatedAt: when}},
+			MoreReplies: 2,
+		},
+	}}
+	src.details[9] = detail
+	m := press(t, openCacheIssue(t, src), key(tea.KeyDown))
+	view := screen(m)
+
+	if !strings.Contains(lineWith(view, "internal/timer.go:85"), "resolved") {
+		t.Fatalf("place of the comment missing:\n%s", view)
+	}
+
+	if !strings.Contains(view, "+next := 2") || strings.Contains(view, "@@") {
+		t.Fatalf("diff missing:\n%s", view)
+	}
+
+	comment, reply := lineWith(view, "Use a constant."), lineWith(view, "Done.")
+
+	if indentOf(reply) <= indentOf(comment) || !strings.Contains(reply, "│") {
+		t.Fatalf("reply is not indented under the comment:\n%s", view)
+	}
+
+	assertFillsScreen(t, m)
+	m = press(t, m, key(tea.KeyEnd))
+
+	if !strings.Contains(screen(m), "2 more replies on GitHub") {
+		t.Fatalf("note about hidden replies missing:\n%s", screen(m))
+	}
+}
+
+// indentOf is the column where the text of a post line starts, inside the frame.
+func indentOf(line string) int {
+	inner := strings.TrimPrefix(strings.TrimSpace(line), "│")
+
+	return len(inner) - len(strings.TrimLeft(inner, " │"))
+}
+
+func TestAssigneesAreShown(t *testing.T) {
+	src := newSource()
+	src.issues[0].Assignees = []string{"lin", "sam"}
+	detail := cacheIssue()
+	detail.Assignees = []string{"lin"}
+	src.details[9] = detail
+	m := start(t, src)
+
+	if row := lineWith(screen(m), "Fix the timer"); !strings.Contains(row, "@lin +1") {
+		t.Fatalf("row = %q", row)
+	}
+
+	if row := lineWith(screen(m), "Document the cache"); strings.Contains(row, "@") {
+		t.Fatalf("row without assignees = %q", row)
+	}
+
+	m = press(t, press(t, m, key(tea.KeyDown)), key(tea.KeyEnter))
+
+	if !strings.Contains(screen(m), "assigned to @lin") {
+		t.Fatalf("header missing assignee:\n%s", screen(m))
 	}
 }

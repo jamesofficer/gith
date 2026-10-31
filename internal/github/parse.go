@@ -39,6 +39,24 @@ func parseRepoView(data []byte) (Repo, error) {
 	return Repo{Host: link.Host, Owner: raw.Owner.Login, Name: raw.Name}, nil
 }
 
+type pageInfo struct {
+	HasNextPage bool   `json:"hasNextPage"`
+	EndCursor   string `json:"endCursor"`
+}
+
+// next is the cursor of the next page. It is empty on the last page.
+func (p pageInfo) next() (string, error) {
+	if !p.HasNextPage {
+		return "", nil
+	}
+
+	if p.EndCursor == "" {
+		return "", errors.New("gh did not return the cursor of the next page")
+	}
+
+	return p.EndCursor, nil
+}
+
 type listPage struct {
 	items []Item
 
@@ -59,6 +77,9 @@ type rawListItem struct {
 	Comments struct {
 		TotalCount int `json:"totalCount"`
 	} `json:"comments"`
+	Assignees struct {
+		Nodes []rawAuthor `json:"nodes"`
+	} `json:"assignees"`
 }
 
 func parseListPage(data []byte) (listPage, error) {
@@ -67,10 +88,7 @@ func parseListPage(data []byte) (listPage, error) {
 			Repository *struct {
 				Items struct {
 					Nodes    []rawListItem `json:"nodes"`
-					PageInfo struct {
-						HasNextPage bool   `json:"hasNextPage"`
-						EndCursor   string `json:"endCursor"`
-					} `json:"pageInfo"`
+					PageInfo pageInfo      `json:"pageInfo"`
 				} `json:"items"`
 			} `json:"repository"`
 		} `json:"data"`
@@ -86,17 +104,13 @@ func parseListPage(data []byte) (listPage, error) {
 		return listPage{}, errors.New("gh did not return the repository")
 	}
 
-	info := repo.Items.PageInfo
+	next, err := repo.Items.PageInfo.next()
 
-	if info.HasNextPage && info.EndCursor == "" {
-		return listPage{}, errors.New("gh did not return the cursor of the next page")
+	if err != nil {
+		return listPage{}, err
 	}
 
-	page := listPage{items: make([]Item, 0, len(repo.Items.Nodes))}
-
-	if info.HasNextPage {
-		page.next = info.EndCursor
-	}
+	page := listPage{items: make([]Item, 0, len(repo.Items.Nodes)), next: next}
 
 	for _, node := range repo.Items.Nodes {
 		login := ""
@@ -114,6 +128,7 @@ func parseListPage(data []byte) (listPage, error) {
 			Labels:    labels(node.Labels.Nodes),
 			Draft:     node.IsDraft,
 			Comments:  node.Comments.TotalCount,
+			Assignees: logins(node.Assignees.Nodes),
 		})
 	}
 
@@ -139,6 +154,7 @@ type rawDetail struct {
 	State          string      `json:"state"`
 	UpdatedAt      time.Time   `json:"updatedAt"`
 	Author         rawAuthor   `json:"author"`
+	Assignees      []rawAuthor `json:"assignees"`
 	Labels         []rawLabel  `json:"labels"`
 	IsDraft        bool        `json:"isDraft"`
 	Body           string      `json:"body"`
@@ -182,9 +198,7 @@ func parseDetail(data []byte) (Detail, error) {
 		})
 	}
 
-	slices.SortStableFunc(thread, func(a, b Post) int {
-		return a.CreatedAt.Compare(b.CreatedAt)
-	})
+	sortThread(thread)
 
 	return Detail{
 		Item: Item{
@@ -196,6 +210,7 @@ func parseDetail(data []byte) (Detail, error) {
 			Labels:    labels(raw.Labels),
 			Draft:     raw.IsDraft,
 			Comments:  len(raw.Comments),
+			Assignees: logins(raw.Assignees),
 		},
 		Body:         raw.Body,
 		Thread:       thread,
@@ -209,7 +224,7 @@ func parseDetail(data []byte) (Detail, error) {
 }
 
 // shownReview drops pending reviews and empty comment reviews. An empty
-// comment review only holds code comments, which gith does not show.
+// comment review only holds code comments, which come from codeThreads.
 func shownReview(review rawReview) bool {
 	switch review.State {
 	case "PENDING":
@@ -245,6 +260,128 @@ func parseCreatedPost(data []byte) (Post, error) {
 	}
 
 	return Post{Author: authorName(login), Body: raw.Body, CreatedAt: raw.CreatedAt}, nil
+}
+
+func sortThread(thread []Post) {
+	slices.SortStableFunc(thread, func(a, b Post) int {
+		return a.CreatedAt.Compare(b.CreatedAt)
+	})
+}
+
+type rawCodeComment struct {
+	Author    rawAuthor `json:"author"`
+	Body      string    `json:"body"`
+	CreatedAt time.Time `json:"createdAt"`
+	State     string    `json:"state"`
+	DiffHunk  string    `json:"diffHunk"`
+}
+
+type rawThread struct {
+	Path         string `json:"path"`
+	Line         *int   `json:"line"`
+	OriginalLine *int   `json:"originalLine"`
+	IsResolved   bool   `json:"isResolved"`
+	IsOutdated   bool   `json:"isOutdated"`
+	Comments     struct {
+		TotalCount int              `json:"totalCount"`
+		Nodes      []rawCodeComment `json:"nodes"`
+	} `json:"comments"`
+}
+
+// parseThreadPage returns one page of code comments and the cursor of the
+// next page. Pending comments are not sent yet, so they are dropped.
+func parseThreadPage(data []byte) ([]Post, string, error) {
+	var raw struct {
+		Data struct {
+			Repository *struct {
+				PullRequest *struct {
+					ReviewThreads struct {
+						Nodes    []rawThread `json:"nodes"`
+						PageInfo pageInfo    `json:"pageInfo"`
+					} `json:"reviewThreads"`
+				} `json:"pullRequest"`
+			} `json:"repository"`
+		} `json:"data"`
+	}
+
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, "", err
+	}
+
+	if raw.Data.Repository == nil || raw.Data.Repository.PullRequest == nil {
+		return nil, "", errors.New("gh did not return the pull request")
+	}
+
+	threads := raw.Data.Repository.PullRequest.ReviewThreads
+	next, err := threads.PageInfo.next()
+
+	if err != nil {
+		return nil, "", err
+	}
+
+	var posts []Post
+
+	for _, thread := range threads.Nodes {
+		comments := slices.DeleteFunc(thread.Comments.Nodes, func(c rawCodeComment) bool {
+			return c.State == "PENDING"
+		})
+
+		if len(comments) == 0 {
+			continue
+		}
+
+		root := comments[0]
+		replies := make([]Reply, 0, len(comments)-1)
+
+		for _, reply := range comments[1:] {
+			replies = append(replies, Reply{
+				Author:    authorName(reply.Author.Login),
+				Body:      reply.Body,
+				CreatedAt: reply.CreatedAt,
+			})
+		}
+
+		posts = append(posts, Post{
+			Author:    authorName(root.Author.Login),
+			Body:      root.Body,
+			CreatedAt: root.CreatedAt,
+			Code: &CodeThread{
+				Path:        thread.Path,
+				Line:        lineOf(thread),
+				Hunk:        root.DiffHunk,
+				Resolved:    thread.IsResolved,
+				Outdated:    thread.IsOutdated,
+				Replies:     replies,
+				MoreReplies: max(0, thread.Comments.TotalCount-len(thread.Comments.Nodes)),
+			},
+		})
+	}
+
+	return posts, next, nil
+}
+
+// lineOf is the line of the comment. An outdated comment uses the line
+// in the old diff. The line is 0 when GitHub does not know it.
+func lineOf(thread rawThread) int {
+	if thread.Line != nil {
+		return *thread.Line
+	}
+
+	if thread.OriginalLine != nil {
+		return *thread.OriginalLine
+	}
+
+	return 0
+}
+
+func logins(raw []rawAuthor) []string {
+	out := make([]string, 0, len(raw))
+
+	for _, author := range raw {
+		out = append(out, author.Login)
+	}
+
+	return out
 }
 
 func labels(raw []rawLabel) []Label {

@@ -46,7 +46,7 @@ type detailLoaded struct {
 	detail github.Detail
 
 	// posts holds the rendered description, then each post of the thread.
-	posts     []string
+	posts     []renderedPost
 	postsW    int
 	postsDark bool
 	index     int
@@ -251,10 +251,6 @@ func (m Model) onDetailKey(key string) (Model, tea.Cmd) {
 	switch key {
 	case "esc", "backspace":
 		m.open = nil
-
-	case "left", "right":
-		m.open = nil
-		m.kind = other(m.kind)
 
 	case "o":
 		return m, m.browse(m.open.key.number)

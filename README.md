@@ -1,6 +1,6 @@
 # gith
 
-Browse open GitHub issues and pull requests in the terminal. Read the thread, write comments, and open items in your browser.
+Browse open GitHub issues and pull requests in the terminal. See who is assigned to each one. Read the thread, write comments, and open items in your browser.
 
 `gith` uses the repository in the current directory. It loads data with the [GitHub CLI](https://cli.github.com/).
 
@@ -43,7 +43,7 @@ gith -L 50
 
 | Key | Action |
 | --- | --- |
-| `←` `→` | Switch between issues and pull requests |
+| `←` `→` | Switch between issues and pull requests in the list |
 | `↑` `↓` | Move in the list, or move through the thread of the open item |
 | `enter` | Open the selected item |
 | `o` | Open the selected item in your browser |
@@ -53,6 +53,6 @@ gith -L 50
 | `esc` | Close the comment box, or return to the list |
 | `q` | Quit |
 
-In an open item, one post fills the screen. The thread holds the description, the comments, and the reviews, oldest first. The footer shows the place in the thread, such as `4/7`. `page up`, `page down`, `home`, and `end` scroll inside that post.
+In an open item, one post fills the screen. The thread holds the description, the comments, the reviews, and the comments on lines of code, oldest first. A comment on code shows its file, its line, and the diff above it. Its replies go under it with an indent. The top of the post frame shows the place in the thread, such as `4 of 7`. `page up`, `page down`, `home`, and `end` scroll inside that post.
 
-In the comment box, `enter` starts a new line. `esc` closes the box and keeps your text until you send it.
+In the comment box, `enter` and `shift+enter` start a new line. `esc` closes the box and keeps your text until you send it.
