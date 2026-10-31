@@ -149,8 +149,28 @@ func TestBrowseListAndOpenDetail(t *testing.T) {
 		t.Fatal("detail missing comment")
 	}
 
-	if strings.Count(detail, "╭") != 2 {
+	if strings.Count(detail, "╭") != 3 {
 		t.Fatalf("detail frames = %d\n%s", strings.Count(detail, "╭"), detail)
+	}
+
+	if !strings.Contains(detail, "1 of 2") {
+		t.Fatal("thread position missing")
+	}
+
+	m = press(t, m, tea.KeyDown)
+
+	if m.thread != 1 {
+		t.Fatalf("down did not select the comment: %d", m.thread)
+	}
+
+	if !strings.Contains(ansi.Strip(m.View().Content), "2 of 2") {
+		t.Fatal("comment position missing")
+	}
+
+	m = press(t, m, tea.KeyUp)
+
+	if m.thread != 0 {
+		t.Fatalf("up did not return to the description: %d", m.thread)
 	}
 
 	if lipgloss.Width(m.View().Content) != 80 {
@@ -220,6 +240,7 @@ func TestRowStaysOnOneScreenLine(t *testing.T) {
 		UpdatedAt: time.Now().Add(-2 * time.Hour),
 		Labels:    []github.Label{{Name: "bug", Color: "ff5451"}, {Name: "enhancement", Color: "0dd8ac"}},
 		Draft:     true,
+		Comments:  9,
 	}
 	line := m.row(item, true, 6, 80)
 
@@ -233,6 +254,20 @@ func TestRowStaysOnOneScreenLine(t *testing.T) {
 
 	if !strings.Contains(line, "…") {
 		t.Fatal("long title was not cut")
+	}
+
+	plain := ansi.Strip(line)
+
+	if !strings.Contains(plain, "💬 9") {
+		t.Fatal("comment chip missing")
+	}
+
+	quiet := item
+	quiet.Comments = 0
+	quietLine := ansi.Strip(m.row(quiet, true, 6, 80))
+
+	if strings.Contains(quietLine, "💬") {
+		t.Fatal("empty comment chip was shown")
 	}
 }
 

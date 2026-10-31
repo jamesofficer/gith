@@ -1,6 +1,7 @@
 package github
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -10,28 +11,41 @@ func TestParseListAndDetail(t *testing.T) {
 		{
 			"number": 12,
 			"title": "Fix the timer",
-			"state": "OPEN",
-			"url": "https://github.com/acme/widgets/issues/12",
-			"updatedAt": "2026-10-30T15:18:41Z",
-			"author": {"login": "ada"},
+			"state": "open",
+			"html_url": "https://github.com/acme/widgets/issues/12",
+			"updated_at": "2026-10-30T15:18:41Z",
+			"user": {"login": "ada"},
 			"labels": [{"name": "bug", "color": "ff5451"}],
-			"isDraft": false
+			"draft": null,
+			"comments": 4
+		},
+		{
+			"number": 8,
+			"title": "A pull request",
+			"state": "open",
+			"html_url": "https://github.com/acme/widgets/pull/8",
+			"updated_at": "2026-10-30T15:18:41Z",
+			"user": {"login": "grace"},
+			"labels": [],
+			"draft": true,
+			"comments": 1,
+			"pull_request": {"url": "https://api.github.com/repos/acme/widgets/pulls/8"}
 		}
 	]`)
 
-	items, err := parseList(listJSON)
+	items, rawCount, err := parseList(listJSON, KindIssue)
 
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if len(items) != 1 {
-		t.Fatalf("got %d items", len(items))
+	if len(items) != 1 || rawCount != 2 {
+		t.Fatalf("got %d items from %d rows", len(items), rawCount)
 	}
 
 	item := items[0]
 
-	if item.Number != 12 || item.Title != "Fix the timer" || item.Author != "ada" {
+	if item.Number != 12 || item.Title != "Fix the timer" || item.Author != "ada" || item.Comments != 4 {
 		t.Fatalf("item = %+v", item)
 	}
 
@@ -83,7 +97,7 @@ func TestParseListAndDetail(t *testing.T) {
 }
 
 func TestParseRejectsBadJSON(t *testing.T) {
-	if _, err := parseList([]byte(`not json`)); err == nil {
+	if _, _, err := parseList([]byte(`not json`), KindIssue); err == nil {
 		t.Fatal("expected an error")
 	}
 
@@ -94,36 +108,23 @@ func TestParseRejectsBadJSON(t *testing.T) {
 
 func TestListArgs(t *testing.T) {
 	c := CLI{Repo: "acme/widgets", Limit: 15}
-	args, err := c.listArgs(KindIssue)
-
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	want := []string{"issue", "list", "--limit", "15", "--json", issueListFields, "-R", "acme/widgets"}
+	args := c.listArgs(KindIssue, 1, 15)
+	want := []string{"api", "repos/acme/widgets/issues?state=open&per_page=15&page=1"}
 
 	if !same(args, want) {
 		t.Fatalf("args = %#v", args)
 	}
 
-	args, err = c.listArgs(KindPull)
+	args = c.listArgs(KindPull, 1, 15)
 
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if args[0] != "pr" || args[len(args)-1] != "acme/widgets" {
+	if args[0] != "api" || !strings.Contains(args[1], "acme/widgets/pulls") {
 		t.Fatalf("args = %#v", args)
 	}
 
 	plain := CLI{}
-	args, err = plain.listArgs(KindIssue)
+	args = plain.listArgs(KindIssue, 1, 30)
 
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if len(args) != 6 {
+	if len(args) != 2 || !strings.Contains(args[1], "repos/{owner}/{repo}/issues") {
 		t.Fatalf("args = %#v", args)
 	}
 }

@@ -4,6 +4,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"charm.land/bubbles/v2/spinner"
@@ -49,7 +50,10 @@ type Model struct {
 
 	spin     spinner.Model
 	viewport viewport.Model
-	rendered string
+	posts    []string
+	postTop  []int
+	postHigh []int
+	thread   int
 	renderW  int
 	renderD  bool
 	renderR  int
@@ -243,13 +247,19 @@ func (m Model) onKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 func (m Model) move(delta int) (tea.Model, tea.Cmd) {
 	if m.screen == screenDetail {
-		if delta < 0 {
-			m.viewport.ScrollUp(-delta)
-		} else {
-			m.viewport.ScrollDown(delta)
+		if len(m.posts) == 0 {
+			return m, nil
 		}
 
-		return m, nil
+		next := step(m.thread, delta, len(m.posts))
+
+		if next == m.thread {
+			return m, nil
+		}
+
+		m.thread = next
+
+		return m.paintThread(false), nil
 	}
 
 	active := m.active()
@@ -269,6 +279,8 @@ func (m Model) open() (tea.Model, tea.Cmd) {
 	m.opened = item
 	m.detail = nil
 	m.detailErr = nil
+	m.posts = nil
+	m.thread = 0
 	m.detailReq++
 	req := m.detailReq
 	key := cacheKey(m.kind, item.Number)
@@ -328,6 +340,7 @@ func (m Model) applyDetail(msg detailMsg) Model {
 	if msg.err != nil {
 		m.detailErr = msg.err
 		m.detail = nil
+		m.posts = nil
 
 		return m
 	}
@@ -346,20 +359,83 @@ func (m Model) prepareDetail(reset bool) Model {
 	}
 
 	contentW := m.detailContentWidth()
-	m.viewport.SetWidth(contentW)
-	m.viewport.SetHeight(m.detailContentHeight())
+	m.viewport.SetWidth(m.width)
+	m.viewport.SetHeight(m.threadViewportHeight())
 
-	if m.rendered == "" || m.renderW != contentW || m.renderD != m.dark || m.renderR != m.detailReq {
-		m.rendered = renderMarkdown(detailMarkdown(*m.detail, time.Now()), contentW, m.dark)
+	if m.posts == nil || m.renderW != contentW || m.renderD != m.dark || m.renderR != m.detailReq {
+		m.posts = renderPosts(*m.detail, contentW, m.dark)
 		m.renderW = contentW
 		m.renderD = m.dark
 		m.renderR = m.detailReq
 	}
 
-	m.viewport.SetContent(m.rendered)
+	if reset {
+		m.thread = 0
+	}
+
+	return m.paintThread(reset)
+}
+
+func (m Model) paintThread(reset bool) Model {
+	if len(m.posts) == 0 {
+		m.viewport.SetContent("")
+
+		return m
+	}
+
+	m.thread = step(m.thread, 0, len(m.posts))
+	blocks := make([]string, len(m.posts))
+	m.postTop = make([]int, len(m.posts))
+	m.postHigh = make([]int, len(m.posts))
+	line := 0
+
+	for i := range m.posts {
+		m.postTop[i] = line
+		blocks[i] = m.postBox(m.postContent(i), i == m.thread)
+		m.postHigh[i] = lipgloss.Height(blocks[i])
+		line += m.postHigh[i]
+
+		if i < len(m.posts)-1 {
+			line++
+		}
+	}
+
+	m.viewport.SetContent(strings.Join(blocks, "\n\n"))
 
 	if reset {
 		m.viewport.GotoTop()
+
+		return m
+	}
+
+	return m.revealThread()
+}
+
+func (m Model) revealThread() Model {
+	if m.thread < 0 || m.thread >= len(m.postTop) {
+		return m
+	}
+
+	top := m.postTop[m.thread]
+	height := m.postHigh[m.thread]
+	bottom := top + height
+	viewH := m.viewport.Height()
+	y := m.viewport.YOffset()
+
+	if top < y {
+		m.viewport.SetYOffset(top)
+
+		return m
+	}
+
+	if bottom > y+viewH {
+		if height >= viewH {
+			m.viewport.SetYOffset(top)
+
+			return m
+		}
+
+		m.viewport.SetYOffset(bottom - viewH)
 	}
 
 	return m

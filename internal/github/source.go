@@ -35,6 +35,7 @@ type Item struct {
 	UpdatedAt time.Time
 	Labels    []Label
 	Draft     bool
+	Comments  int
 }
 
 // Comment is one comment on an issue or pull request.
@@ -95,19 +96,47 @@ func (c CLI) Name(ctx context.Context) (string, error) {
 
 // List returns open issues or pull requests.
 func (c CLI) List(ctx context.Context, kind Kind) ([]Item, error) {
-	args, err := c.listArgs(kind)
-
-	if err != nil {
-		return nil, err
+	if kind != KindIssue && kind != KindPull {
+		return nil, fmt.Errorf("unknown kind %q", kind)
 	}
 
-	out, err := runGH(ctx, args...)
+	limit := c.limit()
+	items := make([]Item, 0, limit)
+	page := 1
 
-	if err != nil {
-		return nil, err
+	for len(items) < limit {
+		per := limit - len(items)
+
+		if per > 100 {
+			per = 100
+		}
+
+		out, err := runGH(ctx, c.listArgs(kind, page, per)...)
+
+		if err != nil {
+			return nil, err
+		}
+
+		batch, rawCount, err := parseList(out, kind)
+
+		if err != nil {
+			return nil, err
+		}
+
+		items = append(items, batch...)
+
+		if rawCount < per {
+			break
+		}
+
+		page++
 	}
 
-	return parseList(out)
+	if len(items) > limit {
+		items = items[:limit]
+	}
+
+	return items, nil
 }
 
 // Detail returns one issue or pull request, including its comments.
@@ -139,20 +168,26 @@ func (c CLI) nameArgs() []string {
 	return c.withRepo([]string{"repo", "view", "--json", "nameWithOwner"})
 }
 
-func (c CLI) listArgs(kind Kind) ([]string, error) {
-	command, fields, err := c.fields(kind, false)
+func (c CLI) listArgs(kind Kind, page, per int) []string {
+	resource := "issues"
 
-	if err != nil {
-		return nil, err
+	if kind == KindPull {
+		resource = "pulls"
 	}
 
-	args := []string{command, "list", "--limit", strconv.Itoa(c.limit()), "--json", fields}
+	repo := "{owner}/{repo}"
 
-	return c.withRepo(args), nil
+	if c.Repo != "" {
+		repo = c.Repo
+	}
+
+	path := fmt.Sprintf("repos/%s/%s?state=open&per_page=%d&page=%d", repo, resource, per, page)
+
+	return []string{"api", path}
 }
 
 func (c CLI) detailArgs(kind Kind, number int) ([]string, error) {
-	command, fields, err := c.fields(kind, true)
+	command, fields, err := c.fields(kind)
 
 	if err != nil {
 		return nil, err
@@ -163,21 +198,13 @@ func (c CLI) detailArgs(kind Kind, number int) ([]string, error) {
 	return c.withRepo(args), nil
 }
 
-func (c CLI) fields(kind Kind, detail bool) (string, string, error) {
+func (c CLI) fields(kind Kind) (string, string, error) {
 	switch kind {
 	case KindIssue:
-		if detail {
-			return "issue", issueDetailFields, nil
-		}
-
-		return "issue", issueListFields, nil
+		return "issue", issueDetailFields, nil
 
 	case KindPull:
-		if detail {
-			return "pr", pullDetailFields, nil
-		}
-
-		return "pr", pullListFields, nil
+		return "pr", pullDetailFields, nil
 
 	default:
 		return "", "", fmt.Errorf("unknown kind %q", kind)

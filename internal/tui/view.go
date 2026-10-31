@@ -73,7 +73,18 @@ func (m Model) listView() string {
 func (m Model) detailView() string {
 	header := m.framedHeader()
 	footer := m.footer()
-	body := m.frameBox(m.detailBody(), m.detailBodyBoxHeight())
+	bodyH := m.threadViewportHeight()
+	var body string
+
+	if m.detail == nil || m.detailLoading || m.detailErr != nil {
+		body = m.frameBox(m.detailStatus(), bodyH)
+	} else {
+		body = lipgloss.NewStyle().
+			Width(m.width).
+			Height(bodyH).
+			MaxHeight(bodyH).
+			Render(m.viewport.View())
+	}
 
 	return header + "\n\n" + body + "\n\n" + footer
 }
@@ -109,26 +120,15 @@ func (m Model) detailContentWidth() int {
 	return width
 }
 
-func (m Model) detailBodyBoxHeight() int {
-	frameY := m.panelStyle().GetVerticalFrameSize()
+func (m Model) threadViewportHeight() int {
 	used := lipgloss.Height(m.framedHeader()) + 2 + lipgloss.Height(m.footer())
 	height := m.height - used
 
-	if height < frameY+1 {
-		return frameY + 1
-	}
-
-	return height
-}
-
-func (m Model) detailContentHeight() int {
-	inner := m.detailBodyBoxHeight() - m.panelStyle().GetVerticalFrameSize()
-
-	if inner < 1 {
+	if height < 1 {
 		return 1
 	}
 
-	return inner
+	return height
 }
 
 func (m Model) bodyHeight(header, footer string) int {
@@ -232,11 +232,24 @@ func (m Model) row(item github.Item, selected bool, numW, width int) string {
 		fmt.Sprintf("#%d", item.Number),
 	), numW)
 	age := padLeft(github.Ago(item.UpdatedAt, time.Now()), 4)
+	comments := commentChip(item.Comments)
+	commentW := lipgloss.Width(comments)
 	fixed := lipgloss.Width(bar) + numW + 2 + 2 + lipgloss.Width(age)
+
+	if commentW > 0 {
+		fixed += commentW + 2
+	}
+
 	middle := width - fixed
 
 	if middle < 8 {
-		plain := bar + num + "  " + item.Title + "  " + age
+		plain := bar + num + "  " + item.Title
+
+		if commentW > 0 {
+			plain += "  " + comments
+		}
+
+		plain += "  " + age
 
 		return ansi.Truncate(plain, width, "…")
 	}
@@ -268,6 +281,10 @@ func (m Model) row(item github.Item, selected bool, numW, width int) string {
 
 	if labelW > 0 {
 		line += "  " + labels
+	}
+
+	if commentW > 0 {
+		line += "  " + comments
 	}
 
 	line += "  " + lipgloss.NewStyle().Foreground(colors.muted).Render(age)
@@ -347,7 +364,7 @@ func (m Model) pullLine(detail github.Detail) string {
 	return strings.Join(parts, lipgloss.NewStyle().Foreground(colors.muted).Render("  ·  "))
 }
 
-func (m Model) detailBody() string {
+func (m Model) detailStatus() string {
 	colors := m.tone()
 
 	if m.detailLoading {
@@ -355,12 +372,12 @@ func (m Model) detailBody() string {
 	}
 
 	if m.detailErr != nil {
-		return lipgloss.NewStyle().Foreground(colors.bad).Width(m.width).Render(
+		return lipgloss.NewStyle().Foreground(colors.bad).Width(m.detailContentWidth()).Render(
 			"Could not open this item.\n\n" + m.detailErr.Error(),
 		)
 	}
 
-	return m.viewport.View()
+	return ""
 }
 
 func (m Model) footer() string {
@@ -369,10 +386,10 @@ func (m Model) footer() string {
 	right := ""
 
 	if m.screen == screenDetail {
-		hint = "↑↓ scroll    esc back    q quit"
+		hint = "↑↓ thread    esc back    q quit"
 
-		if m.detail != nil && !(m.viewport.AtTop() && m.viewport.AtBottom()) {
-			right = fmt.Sprintf("%d%%", int(m.viewport.ScrollPercent()*100))
+		if len(m.posts) > 0 {
+			right = fmt.Sprintf("%d of %d", m.thread+1, len(m.posts))
 		}
 	} else {
 		active := m.active()
@@ -507,6 +524,14 @@ func fitLabels(labels []github.Label, draft bool, maxWidth int, fade color.Color
 	return ""
 }
 
+func commentChip(count int) string {
+	if count < 1 {
+		return ""
+	}
+
+	return chip(fmt.Sprintf("💬 %d", count), "6B7280")
+}
+
 func chip(text, color string) string {
 	hex := normalizeHex(color)
 
@@ -563,37 +588,58 @@ func hexValue(pair string) int64 {
 	return n
 }
 
-func detailMarkdown(detail github.Detail, now time.Time) string {
+func renderPosts(detail github.Detail, width int, dark bool) []string {
 	body := strings.TrimSpace(detail.Body)
 
 	if body == "" {
 		body = "_No description._"
 	}
 
-	var b strings.Builder
-	b.WriteString(body)
+	posts := make([]string, 0, 1+len(detail.Comments))
+	posts = append(posts, renderMarkdown(body, width, dark))
 
-	if len(detail.Comments) == 0 {
-		return b.String()
-	}
+	for _, comment := range detail.Comments {
+		text := strings.TrimSpace(comment.Body)
 
-	b.WriteString("\n\n---\n\n")
-
-	for i, comment := range detail.Comments {
-		if i > 0 {
-			b.WriteString("\n\n")
+		if text == "" {
+			text = "_No comment._"
 		}
 
-		fmt.Fprintf(
-			&b,
-			"**%s** · %s\n\n%s\n",
-			comment.Author,
-			github.AgoLong(comment.CreatedAt, now),
-			strings.TrimSpace(comment.Body),
-		)
+		posts = append(posts, renderMarkdown(text, width, dark))
 	}
 
-	return b.String()
+	return posts
+}
+
+func (m Model) postContent(index int) string {
+	text := m.posts[index]
+
+	if index == 0 || m.detail == nil || index-1 >= len(m.detail.Comments) {
+		return text
+	}
+
+	comment := m.detail.Comments[index-1]
+	colors := m.tone()
+	who := lipgloss.NewStyle().Bold(true).Render(comment.Author)
+	when := lipgloss.NewStyle().Foreground(colors.muted).Render(github.AgoLong(comment.CreatedAt, time.Now()))
+	sep := lipgloss.NewStyle().Foreground(colors.muted).Render("  ·  ")
+
+	return fitLine(who+sep+when, m.detailContentWidth()) + "\n\n" + text
+}
+
+func (m Model) postBox(content string, selected bool) string {
+	border := m.tone().frame
+
+	if selected {
+		border = m.tone().accent
+	}
+
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(border).
+		Padding(0, 1).
+		Width(m.width).
+		Render(content)
 }
 
 func renderMarkdown(text string, width int, dark bool) string {

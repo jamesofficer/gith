@@ -43,9 +43,9 @@ gith -L 50
 | Key | Action |
 | --- | --- |
 | `←` `→` | Switch between issues and pull requests |
-| `↑` `↓` | Move in the list, or scroll the open item |
+| `↑` `↓` | Move in the list, or move between the description and the comments |
 | `enter` | Open the selected item |
 | `esc` | Return to the list |
 | `q` | Quit |
 
-In an open item, `page up`, `page down`, `home`, and `end` also scroll.
+In an open item, `page up`, `page down`, `home`, and `end` scroll the thread.

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -57,20 +58,24 @@ func parseName(data []byte) (string, error) {
 	return raw.NameWithOwner, nil
 }
 
-func parseList(data []byte) ([]Item, error) {
-	var raw []rawItem
+func parseList(data []byte, kind Kind) ([]Item, int, error) {
+	var raw []rawListItem
 
 	if err := json.Unmarshal(data, &raw); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
 	items := make([]Item, 0, len(raw))
 
 	for _, item := range raw {
+		if kind == KindIssue && item.PullRequest != nil {
+			continue
+		}
+
 		items = append(items, item.item())
 	}
 
-	return items, nil
+	return items, len(raw), nil
 }
 
 func parseDetail(data []byte) (Detail, error) {
@@ -81,6 +86,45 @@ func parseDetail(data []byte) (Detail, error) {
 	}
 
 	return raw.detail(), nil
+}
+
+type rawListItem struct {
+	Number      int        `json:"number"`
+	Title       string     `json:"title"`
+	State       string     `json:"state"`
+	URL         string     `json:"html_url"`
+	UpdatedAt   time.Time  `json:"updated_at"`
+	User        *rawAuthor `json:"user"`
+	Labels      []rawLabel `json:"labels"`
+	Draft       *bool      `json:"draft"`
+	Comments    int        `json:"comments"`
+	PullRequest *struct{}  `json:"pull_request"`
+}
+
+func (r rawListItem) item() Item {
+	labels := make([]Label, 0, len(r.Labels))
+
+	for _, label := range r.Labels {
+		labels = append(labels, Label{Name: label.Name, Color: label.Color})
+	}
+
+	author := ""
+
+	if r.User != nil {
+		author = r.User.Login
+	}
+
+	return Item{
+		Number:    r.Number,
+		Title:     r.Title,
+		Author:    authorName(author),
+		State:     strings.ToUpper(r.State),
+		URL:       r.URL,
+		UpdatedAt: r.UpdatedAt,
+		Labels:    labels,
+		Draft:     r.Draft != nil && *r.Draft,
+		Comments:  r.Comments,
+	}
 }
 
 func (r rawItem) item() Item {
@@ -113,8 +157,11 @@ func (r rawItem) detail() Detail {
 		})
 	}
 
+	item := r.item()
+	item.Comments = len(comments)
+
 	return Detail{
-		Item:         r.item(),
+		Item:         item,
 		Body:         r.Body,
 		Comments:     comments,
 		Head:         r.HeadRefName,
