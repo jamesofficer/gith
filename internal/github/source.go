@@ -2,7 +2,9 @@
 package github
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os/exec"
@@ -10,6 +12,12 @@ import (
 	"strings"
 	"time"
 )
+
+// DefaultLimit is the number of open items to load when no limit is set.
+const DefaultLimit = 30
+
+// maxPage is the largest page that the GitHub API returns.
+const maxPage = 100
 
 // Kind selects issues or pull requests.
 type Kind string
@@ -31,25 +39,29 @@ type Item struct {
 	Title     string
 	Author    string
 	State     string
-	URL       string
 	UpdatedAt time.Time
 	Labels    []Label
 	Draft     bool
 	Comments  int
 }
 
-// Comment is one comment on an issue or pull request.
-type Comment struct {
+// Post is one comment or review in the thread of an issue or pull request.
+type Post struct {
 	Author    string
 	Body      string
 	CreatedAt time.Time
+
+	// Review is the review state, such as APPROVED. It is empty for a comment.
+	Review string
 }
 
 // Detail is the full issue or pull request.
 type Detail struct {
 	Item
-	Body         string
-	Comments     []Comment
+	Body string
+
+	// Thread holds the comments and reviews, oldest first.
+	Thread       []Post
 	Head         string
 	Base         string
 	Review       string
@@ -58,96 +70,161 @@ type Detail struct {
 	ChangedFiles int
 }
 
-// Source loads repository data.
+// Source loads repository data, posts comments, and opens items in a browser.
 type Source interface {
-	Name(ctx context.Context) (string, error)
 	List(ctx context.Context, kind Kind) ([]Item, error)
 	Detail(ctx context.Context, kind Kind, number int) (Detail, error)
+	Comment(ctx context.Context, number int, body string) (Post, error)
+	Browse(ctx context.Context, number int) error
 }
 
-// CLI reads data with the gh command.
+type runner func(ctx context.Context, stdin []byte, args ...string) ([]byte, error)
+
+// CLI reads and writes data with the gh command.
 type CLI struct {
-	Repo  string
-	Limit int
+	repo  Repo
+	limit int
+	run   runner
 }
 
-const (
-	issueListFields = "number,title,author,state,updatedAt,labels,url"
-	pullListFields  = issueListFields + ",isDraft"
+// NewCLI makes a CLI. An empty repo means the repository in this directory.
+func NewCLI(ctx context.Context, repo string, limit int) (CLI, error) {
+	return newCLI(ctx, repo, limit, runGH)
+}
 
-	issueDetailFields = issueListFields + ",body,comments"
-	pullDetailFields  = pullListFields + ",body,comments,headRefName,baseRefName,reviewDecision,additions,deletions,changedFiles"
-)
-
-// Name returns owner/name. A set repo skips the gh call.
-func (c CLI) Name(ctx context.Context) (string, error) {
-	if c.Repo != "" {
-		return c.Repo, nil
+func newCLI(ctx context.Context, repo string, limit int, run runner) (CLI, error) {
+	if limit < 1 {
+		return CLI{}, fmt.Errorf("limit must be 1 or more, not %d", limit)
 	}
 
-	out, err := runGH(ctx, c.nameArgs()...)
+	resolved, err := resolveRepo(ctx, repo, run)
 
 	if err != nil {
-		return "", err
+		return CLI{}, err
 	}
 
-	return parseName(out)
+	return CLI{repo: resolved, limit: limit, run: run}, nil
 }
 
-// List returns open issues or pull requests.
-func (c CLI) List(ctx context.Context, kind Kind) ([]Item, error) {
-	if kind != KindIssue && kind != KindPull {
-		return nil, fmt.Errorf("unknown kind %q", kind)
+func resolveRepo(ctx context.Context, repo string, run runner) (Repo, error) {
+	if repo != "" {
+		return ParseRepo(repo)
 	}
 
-	limit := c.limit()
-	items := make([]Item, 0, limit)
-	page := 1
+	out, err := run(ctx, nil, "repo", "view", "--json", "owner,name,url")
 
-	for len(items) < limit {
-		per := limit - len(items)
+	if err != nil {
+		return Repo{}, fmt.Errorf("could not find a GitHub repository in this directory. Use -R OWNER/NAME.\n%w", err)
+	}
 
-		if per > 100 {
-			per = 100
+	return parseRepoView(out)
+}
+
+// Repo is the repository that the CLI reads.
+func (c CLI) Repo() Repo {
+	return c.repo
+}
+
+const listQuery = `query($owner: String!, $name: String!, $first: Int!, $after: String) {
+  repository(owner: $owner, name: $name) {
+    items: %s(states: OPEN, first: $first, after: $after, orderBy: {field: CREATED_AT, direction: DESC}) {
+      nodes {
+        number title state updatedAt %s
+        author { login }
+        labels(first: 20) { nodes { name color } }
+        comments { totalCount }
+      }
+      pageInfo { hasNextPage endCursor }
+    }
+  }
+}`
+
+var (
+	issueListQuery = fmt.Sprintf(listQuery, "issues", "")
+	pullListQuery  = fmt.Sprintf(listQuery, "pullRequests", "isDraft")
+)
+
+// List returns open issues or pull requests, newest first.
+func (c CLI) List(ctx context.Context, kind Kind) ([]Item, error) {
+	query, err := listQueryFor(kind)
+
+	if err != nil {
+		return nil, err
+	}
+
+	var items []Item
+	after := ""
+
+	for len(items) < c.limit {
+		args := c.apiArgs("graphql",
+			"-f", "query="+query,
+			"-f", "owner="+c.repo.Owner,
+			"-f", "name="+c.repo.Name,
+			"-F", "first="+strconv.Itoa(min(c.limit-len(items), maxPage)),
+		)
+
+		if after != "" {
+			args = append(args, "-f", "after="+after)
 		}
 
-		out, err := runGH(ctx, c.listArgs(kind, page, per)...)
+		out, err := c.run(ctx, nil, args...)
 
 		if err != nil {
 			return nil, err
 		}
 
-		batch, rawCount, err := parseList(out, kind)
+		page, err := parseListPage(out)
 
 		if err != nil {
 			return nil, err
 		}
 
-		items = append(items, batch...)
+		items = append(items, page.items...)
 
-		if rawCount < per {
+		if page.next == "" {
 			break
 		}
 
-		page++
-	}
-
-	if len(items) > limit {
-		items = items[:limit]
+		after = page.next
 	}
 
 	return items, nil
 }
 
-// Detail returns one issue or pull request, including its comments.
-func (c CLI) Detail(ctx context.Context, kind Kind, number int) (Detail, error) {
-	args, err := c.detailArgs(kind, number)
+func listQueryFor(kind Kind) (string, error) {
+	switch kind {
+	case KindIssue:
+		return issueListQuery, nil
 
-	if err != nil {
-		return Detail{}, err
+	case KindPull:
+		return pullListQuery, nil
+
+	default:
+		return "", fmt.Errorf("unknown kind %q", kind)
+	}
+}
+
+const (
+	issueDetailFields = "number,title,author,state,updatedAt,labels,body,comments"
+	pullDetailFields  = issueDetailFields + ",isDraft,reviews,headRefName,baseRefName,reviewDecision,additions,deletions,changedFiles"
+)
+
+// Detail returns one issue or pull request with its comments and reviews.
+func (c CLI) Detail(ctx context.Context, kind Kind, number int) (Detail, error) {
+	var command, fields string
+
+	switch kind {
+	case KindIssue:
+		command, fields = "issue", issueDetailFields
+
+	case KindPull:
+		command, fields = "pr", pullDetailFields
+
+	default:
+		return Detail{}, fmt.Errorf("unknown kind %q", kind)
 	}
 
-	out, err := runGH(ctx, args...)
+	out, err := c.run(ctx, nil, command, "view", strconv.Itoa(number), "-R", c.repo.flag(), "--json", fields)
 
 	if err != nil {
 		return Detail{}, err
@@ -156,90 +233,75 @@ func (c CLI) Detail(ctx context.Context, kind Kind, number int) (Detail, error) 
 	return parseDetail(out)
 }
 
-func (c CLI) limit() int {
-	if c.Limit <= 0 {
-		return 30
+// Comment posts a comment on an issue or a pull request.
+func (c CLI) Comment(ctx context.Context, number int, body string) (Post, error) {
+	body = strings.TrimSpace(body)
+
+	if body == "" {
+		return Post{}, errors.New("comment is empty")
 	}
 
-	return c.Limit
-}
-
-func (c CLI) nameArgs() []string {
-	return c.withRepo([]string{"repo", "view", "--json", "nameWithOwner"})
-}
-
-func (c CLI) listArgs(kind Kind, page, per int) []string {
-	resource := "issues"
-
-	if kind == KindPull {
-		resource = "pulls"
-	}
-
-	repo := "{owner}/{repo}"
-
-	if c.Repo != "" {
-		repo = c.Repo
-	}
-
-	path := fmt.Sprintf("repos/%s/%s?state=open&per_page=%d&page=%d", repo, resource, per, page)
-
-	return []string{"api", path}
-}
-
-func (c CLI) detailArgs(kind Kind, number int) ([]string, error) {
-	command, fields, err := c.fields(kind)
+	payload, err := json.Marshal(struct {
+		Body string `json:"body"`
+	}{Body: body})
 
 	if err != nil {
-		return nil, err
+		return Post{}, err
 	}
 
-	args := []string{command, "view", strconv.Itoa(number), "--json", fields}
+	path := fmt.Sprintf("repos/%s/issues/%d/comments", c.repo.FullName(), number)
+	args := c.apiArgs("--method", "POST", "--input", "-", "-H", "Content-Type:application/json", path)
+	out, err := c.run(ctx, payload, args...)
 
-	return c.withRepo(args), nil
+	if err != nil {
+		return Post{}, err
+	}
+
+	return parseCreatedPost(out)
 }
 
-func (c CLI) fields(kind Kind) (string, string, error) {
-	switch kind {
-	case KindIssue:
-		return "issue", issueDetailFields, nil
+// Browse opens an issue or a pull request in the web browser.
+func (c CLI) Browse(ctx context.Context, number int) error {
+	_, err := c.run(ctx, nil, "browse", strconv.Itoa(number), "-R", c.repo.flag())
 
-	case KindPull:
-		return "pr", pullDetailFields, nil
-
-	default:
-		return "", "", fmt.Errorf("unknown kind %q", kind)
-	}
+	return err
 }
 
-func (c CLI) withRepo(args []string) []string {
-	if c.Repo == "" {
-		return args
-	}
+func (c CLI) apiArgs(args ...string) []string {
+	out := append([]string{"api"}, args...)
 
-	out := make([]string, 0, len(args)+2)
-	out = append(out, args...)
-	out = append(out, "-R", c.Repo)
+	if c.repo.Host != "" {
+		out = append(out, "--hostname", c.repo.Host)
+	}
 
 	return out
 }
 
-func runGH(ctx context.Context, args ...string) ([]byte, error) {
+func runGH(ctx context.Context, stdin []byte, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, "gh", args...)
-	out, err := cmd.Output()
+	cmd.Env = append(cmd.Environ(), "GH_PROMPT_DISABLED=1")
 
-	if err != nil {
-		var exit *exec.ExitError
-
-		if errors.As(err, &exit) {
-			msg := strings.TrimSpace(string(exit.Stderr))
-
-			if msg != "" {
-				return nil, errors.New(msg)
-			}
-		}
-
-		return nil, err
+	if stdin != nil {
+		cmd.Stdin = bytes.NewReader(stdin)
 	}
 
-	return out, nil
+	out, err := cmd.Output()
+
+	if err == nil {
+		return out, nil
+	}
+
+	if ctx.Err() != nil {
+		return nil, fmt.Errorf("gh did not answer in time: %w", ctx.Err())
+	}
+
+	var exit *exec.ExitError
+
+	if errors.As(err, &exit) {
+		if msg := strings.TrimSpace(string(exit.Stderr)); msg != "" {
+			return nil, errors.New(msg)
+		}
+	}
+
+	return nil, err
 }
