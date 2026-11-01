@@ -323,7 +323,7 @@ func TestCommentRejectsEmpty(t *testing.T) {
 func threads(more bool) string {
 	return fmt.Sprintf(`{"data": {"repository": {"pullRequest": {"reviewThreads": {
 		"nodes": [{
-			"path": "timer.go", "line": null, "originalLine": 85, "isResolved": true, "isOutdated": true,
+			"path": "timer.go", "line": null, "originalLine": 85, "diffSide": "LEFT", "isResolved": true, "isOutdated": true,
 			"comments": {"totalCount": 4, "nodes": [
 				{"author": {"login": "sam"}, "body": "Use a constant.", "createdAt": "2026-10-30T11:10:00Z", "state": "SUBMITTED", "diffHunk": "@@ -1 +1 @@\n-a\n+b"},
 				{"author": {"login": "ada"}, "body": "Done.", "createdAt": "2026-10-30T13:00:00Z", "state": "SUBMITTED"},
@@ -356,7 +356,7 @@ func TestCodeCommentKeepsItsPlaceAndReplies(t *testing.T) {
 		t.Fatalf("post = %+v", post)
 	}
 
-	if code.Path != "timer.go" || code.Line != 85 || !code.Resolved || !code.Outdated || code.Hunk != "@@ -1 +1 @@\n-a\n+b" {
+	if code.Path != "timer.go" || code.Line != 85 || code.Side != SideOld || !code.Resolved || !code.Outdated || code.Hunk != "@@ -1 +1 @@\n-a\n+b" {
 		t.Fatalf("code = %+v", code)
 	}
 
@@ -382,7 +382,7 @@ func TestIssueDetailDoesNotLoadCodeComments(t *testing.T) {
 }
 
 func TestDiffReadsEachFileOfThePullRequest(t *testing.T) {
-	gh := &fakeGH{replies: map[string][]string{"pr": {`diff --git a/timer.go b/timer.go
+	gh := &fakeGH{replies: map[string][]string{"pr": {`{"headRefOid": "abc123"}`, `diff --git a/timer.go b/timer.go
 --- a/timer.go
 +++ b/timer.go
 @@ -1 +1 @@
@@ -391,17 +391,59 @@ func TestDiffReadsEachFileOfThePullRequest(t *testing.T) {
 diff --git a/logo.png b/logo.png
 Binary files a/logo.png and b/logo.png differ
 `}}}
-	files, err := testCLI(t, "acme/widgets", 30, gh).Diff(context.Background(), 12)
+	diff, err := testCLI(t, "acme/widgets", 30, gh).Diff(context.Background(), 12)
 
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if len(files) != 2 || files[0].NewName != "timer.go" || !files[1].IsBinary {
-		t.Fatalf("files = %+v", files)
+	files := diff.Files
+
+	if diff.Commit != "abc123" || len(files) != 2 || files[0].NewName != "timer.go" || !files[1].IsBinary {
+		t.Fatalf("diff = %+v", diff)
 	}
 
-	if args := strings.Join(gh.callsOf("pr")[0].args, " "); !strings.HasPrefix(args, "pr diff 12 -R acme/widgets") {
+	if args := strings.Join(gh.callsOf("pr")[1].args, " "); !strings.HasPrefix(args, "pr diff 12 -R acme/widgets") {
 		t.Fatalf("gh %s", args)
+	}
+}
+
+func TestCommentOnCodeSendsTheRangeOfLines(t *testing.T) {
+	reply := `{"body": "Merge these.", "user": {"login": "ada"}, "created_at": "2026-11-02T03:04:05Z",
+		"path": "timer.go", "line": 12, "side": "RIGHT", "diff_hunk": "@@ -9 +9,4 @@"}`
+	gh := &fakeGH{replies: map[string][]string{"rest": {reply, reply}}}
+	cli := testCLI(t, "acme/widgets", 30, gh)
+	comment := CodeComment{
+		Commit: "abc123",
+		Path:   "timer.go",
+		Start:  DiffLine{Side: SideOld, Line: 10},
+		End:    DiffLine{Side: SideNew, Line: 12},
+		Body:   " Merge these.\n",
+	}
+	post, err := cli.CommentOnCode(context.Background(), 4, comment)
+
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if post.Author != "ada" || post.Code == nil || post.Code.Path != "timer.go" || post.Code.Line != 12 || post.Code.Side != SideNew {
+		t.Fatalf("post = %+v, code = %+v", post, post.Code)
+	}
+
+	sent := gh.callsOf("rest")[0]
+	want := `{"body":"Merge these.","commit_id":"abc123","line":12,"path":"timer.go","side":"RIGHT","start_line":10,"start_side":"LEFT"}`
+
+	if sent.stdin != want || !slices.Contains(sent.args, "repos/acme/widgets/pulls/4/comments") {
+		t.Fatalf("sent %s to %v", sent.stdin, sent.args)
+	}
+
+	comment.Start = comment.End
+
+	if _, err := cli.CommentOnCode(context.Background(), 4, comment); err != nil {
+		t.Fatal(err)
+	}
+
+	if single := gh.callsOf("rest")[1].stdin; strings.Contains(single, "start_line") {
+		t.Fatalf("a comment on one line sent a range: %s", single)
 	}
 }

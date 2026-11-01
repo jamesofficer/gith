@@ -257,9 +257,16 @@ func (m Model) hints() (string, string) {
 
 	switch state := m.open.state.(type) {
 	case *detailLoaded:
-		switch state.diff.(type) {
+		switch diff := state.diff.(type) {
 		case *diffLoaded:
-			return "↑↓ scroll   ←→ file   o browser   r refresh   esc back   q quit", ""
+			if page := diff.page(); diff.selecting && page != nil {
+				first, last := min(diff.anchor, diff.cursor), max(diff.anchor, diff.cursor)
+				lines := linesName(github.CodeComment{Start: page.lines[first].spot, End: page.lines[last].spot})
+
+				return "↑↓ jk pick lines   c comment on " + lines + "   esc cancel   q quit", ""
+			}
+
+			return "↑↓ jk line   c select   ←→ file   o browser   r refresh   esc back   q quit", ""
 
 		case *diffFailed:
 			return "r retry   o browser   esc back   q quit", ""

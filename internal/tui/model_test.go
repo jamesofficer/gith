@@ -39,8 +39,10 @@ type fakeSource struct {
 	listCalls   int
 	detailCalls int
 	diffCalls   int
-	posted      []posted
-	browsed     []int
+
+	codeComments []github.CodeComment
+	posted       []posted
+	browsed      []int
 }
 
 func (f *fakeSource) List(_ context.Context, kind github.Kind) ([]github.Item, error) {
@@ -73,16 +75,28 @@ func (f *fakeSource) Detail(_ context.Context, _ github.Kind, number int) (githu
 	return detail, nil
 }
 
-func (f *fakeSource) Diff(_ context.Context, _ int) ([]*gitdiff.File, error) {
+func (f *fakeSource) Diff(_ context.Context, _ int) (github.PullDiff, error) {
 	f.diffCalls++
 
 	if f.diffErr != nil {
-		return nil, f.diffErr
+		return github.PullDiff{}, f.diffErr
 	}
 
 	files, _, err := gitdiff.Parse(strings.NewReader(f.diff))
 
-	return files, err
+	return github.PullDiff{Commit: "head-sha", Files: files}, err
+}
+
+func (f *fakeSource) CommentOnCode(_ context.Context, _ int, comment github.CodeComment) (github.Post, error) {
+	f.codeComments = append(f.codeComments, comment)
+
+	if f.commentErr != nil {
+		return github.Post{}, f.commentErr
+	}
+
+	code := &github.CodeThread{Path: comment.Path, Line: comment.End.Line, Side: comment.End.Side}
+
+	return github.Post{Author: "ada", Body: comment.Body, CreatedAt: when, Code: code}, nil
 }
 
 func (f *fakeSource) Comment(_ context.Context, number int, body string) (github.Post, error) {

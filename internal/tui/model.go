@@ -9,7 +9,6 @@ import (
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
-	"github.com/bluekeyes/go-gitdiff/gitdiff"
 
 	"github.com/jamesofficer/gith/internal/github"
 )
@@ -79,8 +78,8 @@ type Model struct {
 	open    *openItem
 	problem string
 	cache   map[itemKey]github.Detail
-	diffs   map[itemKey][]*gitdiff.File
-	drafts  map[itemKey]string
+	diffs   map[itemKey]github.PullDiff
+	drafts  map[draftKey]string
 	req     int
 }
 
@@ -116,8 +115,8 @@ func New(source github.Source, repo string) Model {
 		issues:   list{loading: true},
 		pulls:    list{loading: true},
 		cache:    map[itemKey]github.Detail{},
-		diffs:    map[itemKey][]*gitdiff.File{},
-		drafts:   map[itemKey]string{},
+		diffs:    map[itemKey]github.PullDiff{},
+		drafts:   map[draftKey]string{},
 		spin:     spinner.New(spinner.WithSpinner(spinner.MiniDot)),
 		viewport: viewport.New(),
 	}
@@ -274,7 +273,7 @@ func (m Model) onDetailKey(key string) (Model, tea.Cmd) {
 		return m.reloadDetail()
 
 	case "c":
-		return m.startCompose()
+		return m.startCompose(nil)
 
 	case "d":
 		if loaded != nil {
@@ -479,9 +478,11 @@ func (m Model) sync() Model {
 
 	layout := m.detailLayout()
 	var content string
+	var cursorTop, cursorBottom int
+	diff, showDiff := loaded.diff.(*diffLoaded)
 
-	if diff, ok := loaded.diff.(*diffLoaded); ok {
-		content = m.diffPage(diff, width)
+	if showDiff {
+		content, cursorTop, cursorBottom = m.diffContent(loaded, diff, width)
 	} else {
 		content = m.postContent(loaded)
 	}
@@ -495,6 +496,11 @@ func (m Model) sync() Model {
 	m.viewport.SetWidth(width)
 	m.viewport.SetHeight(min(lipgloss.Height(content), layout.postHeight-m.frameHeight()))
 	m.viewport.SetContent(content)
+
+	if showDiff && diff.follow {
+		diff.follow = false
+		m.viewport.SetYOffset(rowsInView(m.viewport.YOffset(), m.viewport.Height(), cursorTop, cursorBottom))
+	}
 
 	return m
 }
