@@ -56,6 +56,7 @@ func (m Model) diffContent(loaded *detailLoaded, diff *diffLoaded, width int) (s
 	if diff.pages == nil || diff.pagesW != width || diff.pagesDark != m.dark {
 		diff.pages = make([]*filePage, len(diff.diff.Files))
 		diff.pagesW, diff.pagesDark = width, m.dark
+		diff.threads = nil
 	}
 
 	if diff.pages[diff.index] == nil {
@@ -68,7 +69,7 @@ func (m Model) diffContent(loaded *detailLoaded, diff *diffLoaded, width int) (s
 		diff.cursor = moveCursor(page.lines, -1, 1, -1)
 	}
 
-	marks := commentMarks(loaded.detail.Thread)
+	threads := codeThreads(loaded.detail.Thread)
 	colors := m.tone()
 	bar := lipgloss.NewStyle().Foreground(colors.accent).Render("▌")
 	number := lipgloss.NewStyle().Foreground(colors.muted)
@@ -101,8 +102,9 @@ func (m Model) diffContent(loaded *detailLoaded, diff *diffLoaded, width int) (s
 		}
 
 		mark := "  "
+		here := threads[codeSpot{path: page.path, spot: line.spot}]
 
-		if marks[codeSpot{path: page.path, spot: line.spot}] {
+		if len(here) > 0 {
 			mark = "💬"
 		}
 
@@ -116,9 +118,104 @@ func (m Model) diffContent(loaded *detailLoaded, diff *diffLoaded, width int) (s
 
 			rows = append(rows, gutter+row)
 		}
+
+		if len(here) > 0 {
+			open := diff.expanded[codeSpot{path: page.path, spot: line.spot}]
+			rows = append(rows, m.inlineThreads(loaded, diff, here, open, page.numberWidth, width)...)
+		}
 	}
 
 	return strings.Join(rows, "\n"), top, bottom
+}
+
+// inlineThreads is the code comments under a line, at the column of the +
+// and - marks. A closed comment is one row with the start of its text. An
+// open comment shows in full in a frame, with its replies.
+func (m Model) inlineThreads(loaded *detailLoaded, diff *diffLoaded, indexes []int, open bool, numberWidth, width int) []string {
+	muted := lipgloss.NewStyle().Foreground(m.tone().muted)
+	indent := strings.Repeat(" ", numberWidth+4)
+	frame := m.panelStyle().BorderForeground(m.tone().frame).Width(max(1, width-len(indent)))
+	textWidth := max(1, width-len(indent)-frame.GetHorizontalFrameSize()-2)
+	var rows []string
+
+	for _, i := range indexes {
+		post := loaded.detail.Thread[i]
+
+		if !open {
+			rows = append(rows, indent+fitLine(m.threadPreview(post), width-len(indent)))
+
+			continue
+		}
+
+		rendered, err := diff.renderedThread(loaded.detail.Thread, i, textWidth, m.dark)
+
+		if err != nil {
+			rows = append(rows, indent+lipgloss.NewStyle().Foreground(m.tone().bad).Render("Could not show this comment. "+err.Error()))
+
+			continue
+		}
+
+		lines := strings.Split(m.postWithReplies(post, rendered, textWidth), "\n")
+
+		for j, line := range lines {
+			lead := "  "
+
+			if j == 0 {
+				lead = muted.Render("▾ ")
+			}
+
+			lines[j] = lead + line
+		}
+
+		for _, line := range strings.Split(frame.Render(strings.Join(lines, "\n")), "\n") {
+			rows = append(rows, indent+line)
+		}
+	}
+
+	return rows
+}
+
+// threadPreview is one row for a closed code comment: the author, the
+// first line of the text, and the number of replies.
+func (m Model) threadPreview(post github.Post) string {
+	muted := lipgloss.NewStyle().Foreground(m.tone().muted)
+	text := ""
+
+	for _, line := range strings.Split(post.Body, "\n") {
+		if text = strings.TrimSpace(line); text != "" {
+			break
+		}
+	}
+
+	preview := muted.Render("▸ ") + lipgloss.NewStyle().Bold(true).Render(post.Author) + "  " + text
+
+	replies := len(post.Code.Replies) + post.Code.MoreReplies
+
+	if replies == 1 {
+		preview += muted.Render("  ·  1 reply")
+	} else if replies > 1 {
+		preview += muted.Render(fmt.Sprintf("  ·  %d replies", replies))
+	}
+
+	return preview
+}
+
+// renderedThread is the markdown of one code comment. It renders all code
+// comments again when the width changes or a new comment is not rendered.
+func (d *diffLoaded) renderedThread(thread []github.Post, index, width int, dark bool) (renderedPost, error) {
+	if rendered, ok := d.threads[index]; ok && d.threadsW == width {
+		return rendered, nil
+	}
+
+	threads, err := renderCodeThreads(thread, width, dark)
+
+	if err != nil {
+		return renderedPost{}, err
+	}
+
+	d.threads, d.threadsW = threads, width
+
+	return threads[index], nil
 }
 
 // moveCursor moves from line from by delta lines of code, and skips hunk
@@ -154,18 +251,20 @@ func moveCursor(lines []pageLine, from, delta, hunk int) int {
 	return -1
 }
 
-// commentMarks is the set of lines that have a code comment. An outdated
-// comment is on a line of an older diff, so it gets no mark.
-func commentMarks(thread []github.Post) map[codeSpot]bool {
-	marks := map[codeSpot]bool{}
+// codeThreads finds the code comments on each line, by their index in the
+// thread. An outdated comment is on a line of an older diff, so it is left
+// out.
+func codeThreads(thread []github.Post) map[codeSpot][]int {
+	threads := map[codeSpot][]int{}
 
-	for _, post := range thread {
+	for i, post := range thread {
 		if code := post.Code; code != nil && !code.Outdated && code.Line > 0 {
-			marks[codeSpot{path: code.Path, spot: github.DiffLine{Side: code.Side, Line: code.Line}}] = true
+			spot := codeSpot{path: code.Path, spot: github.DiffLine{Side: code.Side, Line: code.Line}}
+			threads[spot] = append(threads[spot], i)
 		}
 	}
 
-	return marks
+	return threads
 }
 
 // renderFile is the name of a changed file, then each hunk of its diff.

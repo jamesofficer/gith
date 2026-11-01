@@ -174,13 +174,25 @@ func (m Model) postContent(loaded *detailLoaded) string {
 
 	post := loaded.detail.Thread[loaded.index-1]
 	width := m.contentWidth()
+	text := m.postWithReplies(post, rendered, width)
+
+	if post.Code == nil {
+		return text
+	}
+
+	return m.codePlace(*post.Code, width) + "\n\n" + text
+}
+
+// postWithReplies is the byline and body of a post. A code comment also
+// shows its replies with an indent.
+func (m Model) postWithReplies(post github.Post, rendered renderedPost, width int) string {
 	text := m.byline(post.Author, verdictName(post.Review), post.CreatedAt, width) + "\n\n" + rendered.body
 
 	if post.Code == nil {
 		return text
 	}
 
-	sections := []string{m.codePlace(*post.Code, width), text}
+	sections := []string{text}
 
 	for i, reply := range post.Code.Replies {
 		byline := m.byline(reply.Author, "", reply.CreatedAt, width-replyIndent)

@@ -266,7 +266,13 @@ func (m Model) hints() (string, string) {
 				return "↑↓ jk pick lines   c comment on " + lines + "   esc cancel   q quit", ""
 			}
 
-			return "↑↓ jk line   c select   ←→ file   b browser   r refresh   esc back   q quit", ""
+			comments := ""
+
+			if spot, ok := diff.cursorSpot(); ok && len(codeThreads(state.detail.Thread)[spot]) > 0 {
+				comments = "enter comments   "
+			}
+
+			return "↑↓ jk line   " + comments + "c select   ←→ file   b browser   r refresh   esc back   q quit", ""
 
 		case *diffFailed:
 			return "r retry   b browser   esc back   q quit", ""

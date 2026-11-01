@@ -56,7 +56,7 @@ gith -L 50
 
 In an open item, one post fills the screen. The thread holds the description, the comments, the reviews, and the comments on lines of code, oldest first. A comment on code shows its file, its line, and the diff above it. Its replies go under it with an indent. The top of the post frame shows the place in the thread, such as `4 of 7`. `page up`, `page down`, `home`, and `end` scroll inside that post.
 
-In the diff, one changed file fills the screen, and long lines wrap. `←` and `→` move between files. A cursor marks one line: `↑` `↓` move it 6 lines, and `k` `j` move it 1 line. The left column shows the line number: the new number, or the old number for a removed line. 💬 marks a line that has a comment. `esc` or `d` returns to the thread. A very large pull request can be too large for GitHub to send. Then press `b` to see it in your browser.
+In the diff, one changed file fills the screen, and long lines wrap. `←` and `→` move between files. A cursor marks one line: `↑` `↓` move it 6 lines, and `k` `j` move it 1 line. The left column shows the line number: the new number, or the old number for a removed line. 💬 marks a line that has a comment, and the start of each comment shows under the line. Press `enter` on the line to show its comments in full with their replies, and again to show only the start. `esc` or `d` returns to the thread. A very large pull request can be too large for GitHub to send. Then press `b` to see it in your browser.
 
 To comment on code, press `c` on the first line, move to the last line, and press `c` again. Press `c` two times to comment on one line. A range must stay in one block of changes (`@@`). `esc` cancels the range. The comment is sent at once, not as part of a review.
 

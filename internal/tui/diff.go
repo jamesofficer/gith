@@ -35,6 +35,12 @@ type diffLoaded struct {
 
 	// follow scrolls the view to the cursor at the next sync.
 	follow bool
+
+	// expanded holds the lines whose code comments show in full. threads
+	// holds the markdown of each code comment, rendered at threadsW.
+	expanded map[codeSpot]bool
+	threads  map[int]renderedPost
+	threadsW int
 }
 
 func (*diffLoading) isDiffState() {}
@@ -49,7 +55,7 @@ type diffMsg struct {
 }
 
 func newDiffLoaded(diff github.PullDiff) *diffLoaded {
-	return &diffLoaded{diff: diff, cursor: -1}
+	return &diffLoaded{diff: diff, cursor: -1, expanded: map[codeSpot]bool{}}
 }
 
 func (m Model) openDiff(loaded *detailLoaded) (Model, tea.Cmd) {
@@ -174,9 +180,26 @@ func (m Model) onDiffKey(loaded *detailLoaded, key string) (Model, tea.Cmd) {
 
 	case "c":
 		return m.selectLines(loaded, diff)
+
+	case "enter":
+		if spot, ok := diff.cursorSpot(); ok && len(codeThreads(loaded.detail.Thread)[spot]) > 0 {
+			diff.expanded[spot] = !diff.expanded[spot]
+			diff.follow = true
+		}
 	}
 
 	return m, nil
+}
+
+// cursorSpot is the place of the cursor line, used to find its comments.
+func (d *diffLoaded) cursorSpot() (codeSpot, bool) {
+	page := d.page()
+
+	if page == nil || d.cursor < 0 {
+		return codeSpot{}, false
+	}
+
+	return codeSpot{path: page.path, spot: page.lines[d.cursor].spot}, true
 }
 
 func (m Model) closeDiff(loaded *detailLoaded) Model {
