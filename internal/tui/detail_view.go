@@ -51,7 +51,13 @@ func (m Model) detailView() string {
 		}
 	}
 
-	parts := []string{layout.header, post}
+	var parts []string
+
+	if layout.header != "" {
+		parts = append(parts, layout.header)
+	}
+
+	parts = append(parts, post)
 
 	if c := m.compose(); c != nil {
 		parts = append(parts, m.commentBox(c))

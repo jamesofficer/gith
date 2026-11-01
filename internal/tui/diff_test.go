@@ -39,8 +39,12 @@ func TestDiffShowsOneFileAtATime(t *testing.T) {
 	m := press(t, openSettingPull(t, src), char('d'))
 	first := screen(m)
 
-	if !strings.HasPrefix(postTop(first), "╭─ file 1 of 2 ─") || !strings.Contains(first, "+next := 2") || strings.Contains(first, "logo.png") {
+	if !strings.HasPrefix(first, "╭─ file 1 of 2 ─") || !strings.Contains(first, "+next := 2") || strings.Contains(first, "logo.png") {
 		t.Fatalf("first file =\n%s", first)
+	}
+
+	if strings.Contains(first, "Add a setting") {
+		t.Fatalf("the header shows over the diff:\n%s", first)
 	}
 
 	assertFillsScreen(t, m)
