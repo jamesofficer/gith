@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -98,6 +99,9 @@ func (m Model) applyDiff(msg diffMsg) Model {
 	return m
 }
 
+// arrowScroll is the number of lines that an arrow key scrolls the diff.
+const arrowScroll = 6
+
 func (m Model) onDiffKey(loaded *detailLoaded, key string) (Model, tea.Cmd) {
 	switch key {
 	case "esc", "backspace", "d":
@@ -120,10 +124,16 @@ func (m Model) onDiffKey(loaded *detailLoaded, key string) (Model, tea.Cmd) {
 	case "right":
 		return m.moveFile(loaded, 1), nil
 
-	case "up", "k":
+	case "up":
+		m.viewport.ScrollUp(arrowScroll)
+
+	case "down":
+		m.viewport.ScrollDown(arrowScroll)
+
+	case "k":
 		m.viewport.ScrollUp(1)
 
-	case "down", "j":
+	case "j":
 		m.viewport.ScrollDown(1)
 
 	case "pgup":
@@ -200,6 +210,7 @@ func (m Model) renderFile(file *gitdiff.File, width int) string {
 	}
 
 	code := m.codeStyle()
+	numberWidth := lineNumberWidth(file)
 
 	for _, fragment := range file.TextFragments {
 		lines = append(lines, "", fitLine(muted.Render(strings.TrimSpace(fragment.Header())), width))
@@ -219,27 +230,44 @@ func (m Model) renderFile(file *gitdiff.File, width int) string {
 
 		oldRows := highlightLines(file.OldName, oldText)
 		newRows := highlightLines(file.NewName, newText)
+		oldNumber, newNumber := fragment.OldPosition, fragment.NewPosition
 
 		for _, line := range fragment.Lines {
 			var tokens []chroma.Token
+			number := newNumber
 
 			if line.New() {
 				tokens, newRows = newRows[0], newRows[1:]
+				newNumber++
 			}
 
 			if line.Old() {
 				if line.Op == gitdiff.OpDelete {
-					tokens = oldRows[0]
+					tokens, number = oldRows[0], oldNumber
 				}
 
 				oldRows = oldRows[1:]
+				oldNumber++
 			}
 
-			lines = append(lines, m.diffLine(line.Op, tokens, code, width)...)
+			gutter := padLeft(strconv.FormatInt(number, 10), numberWidth)
+			lines = append(lines, m.diffLine(gutter, line.Op, tokens, code, width)...)
 		}
 	}
 
 	return strings.Join(lines, "\n")
+}
+
+// lineNumberWidth is the number of digits in the largest line number of the
+// file, on the old side or the new side.
+func lineNumberWidth(file *gitdiff.File) int {
+	var largest int64
+
+	for _, fragment := range file.TextFragments {
+		largest = max(largest, fragment.OldPosition+fragment.OldLines, fragment.NewPosition+fragment.NewLines)
+	}
+
+	return len(strconv.FormatInt(largest, 10))
 }
 
 // codeStyle is the chroma theme that suits the background of the terminal.
@@ -290,9 +318,9 @@ func (m Model) fileTitle(file *gitdiff.File, width int) string {
 }
 
 // diffLine colors one line of code and wraps it onto more screen lines.
-// Each part keeps the + or - mark, and a changed line fills the full width
-// with its background color.
-func (m Model) diffLine(op gitdiff.LineOp, tokens []chroma.Token, code *chroma.Style, width int) []string {
+// The gutter holds the line number, on the first part only. Each part keeps
+// the + or - mark, and a changed line fills the width with its background.
+func (m Model) diffLine(gutter string, op gitdiff.LineOp, tokens []chroma.Token, code *chroma.Style, width int) []string {
 	colors := m.tone()
 	base := lipgloss.NewStyle()
 	mark := lipgloss.NewStyle().Foreground(colors.muted)
@@ -313,12 +341,15 @@ func (m Model) diffLine(op gitdiff.LineOp, tokens []chroma.Token, code *chroma.S
 		text.WriteString(tokenStyle(base, code.Get(token.Type)).Render(token.Value))
 	}
 
-	codeWidth := max(1, width-1)
+	number := lipgloss.NewStyle().Foreground(colors.muted)
+	blank := strings.Repeat(" ", lipgloss.Width(gutter))
+	codeWidth := max(1, width-lipgloss.Width(gutter)-2)
 	parts := strings.Split(hardwrap(text.String(), codeWidth), "\n")
 
 	for i, part := range parts {
 		fill := base.Render(strings.Repeat(" ", max(0, codeWidth-ansi.StringWidth(part))))
-		parts[i] = mark.Render(op.String()) + part + fill
+		parts[i] = number.Render(gutter) + " " + mark.Render(op.String()) + part + fill
+		gutter = blank
 	}
 
 	return parts

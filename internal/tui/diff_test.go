@@ -2,6 +2,7 @@ package tui
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -75,7 +76,7 @@ func TestLongDiffLineWrapsAndKeepsItsMark(t *testing.T) {
 	for _, line := range strings.Split(panel, "\n") {
 		inner := strings.TrimSpace(strings.Trim(strings.TrimSpace(line), "│"))
 
-		if strings.HasPrefix(inner, "+") {
+		if inner = strings.TrimLeft(inner, "0123456789 "); strings.HasPrefix(inner, "+") {
 			shown += strings.TrimPrefix(inner, "+")
 		}
 	}
@@ -111,5 +112,49 @@ func TestDiffKeyOnIssueDoesNothing(t *testing.T) {
 
 	if src.diffCalls != 0 || !strings.Contains(screen(m), "cache works") {
 		t.Fatalf("d on an issue made %d diff calls:\n%s", src.diffCalls, screen(m))
+	}
+}
+
+func TestDiffShowsTheLineNumberOfEachSide(t *testing.T) {
+	src := newSource()
+	src.diff = "diff --git a/a.go b/a.go\n--- a/a.go\n+++ b/a.go\n@@ -9,2 +9,3 @@\n context\n-old\n+first\n+second\n"
+	m := press(t, openSettingPull(t, src), char('d'))
+	view := screen(m)
+
+	for _, want := range []string{"│  9  context", "│ 10 -old", "│ 10 +first", "│ 11 +second"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("missing %q:\n%s", want, view)
+		}
+	}
+}
+
+func TestArrowsScrollTheDiffFasterThanJK(t *testing.T) {
+	var body strings.Builder
+
+	for i := 1; i <= 40; i++ {
+		fmt.Fprintf(&body, "+line-%02d\n", i)
+	}
+
+	src := newSource()
+	src.diff = "diff --git a/a.go b/a.go\n--- a/a.go\n+++ b/a.go\n@@ -0,0 +1,40 @@\n" + body.String()
+	m := press(t, openSettingPull(t, src), char('d'))
+	m = press(t, m, key(tea.KeyDown))
+	view := screen(m)
+
+	if strings.Contains(view, "line-03") || !strings.Contains(view, "line-04") {
+		t.Fatalf("down did not scroll 6 lines:\n%s", view)
+	}
+
+	m = press(t, m, char('j'))
+	view = screen(m)
+
+	if strings.Contains(view, "line-04") || !strings.Contains(view, "line-05") {
+		t.Fatalf("j did not scroll 1 line:\n%s", view)
+	}
+
+	m = press(t, m, key(tea.KeyUp))
+
+	if !strings.Contains(screen(m), "line-01") {
+		t.Fatalf("up did not scroll back 6 lines:\n%s", screen(m))
 	}
 }
