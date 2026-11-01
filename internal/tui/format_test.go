@@ -30,7 +30,7 @@ func TestAgo(t *testing.T) {
 }
 
 func TestSpreadKeepsTheRightSideOnANarrowLine(t *testing.T) {
-	line := spread("↑↓ thread   c comment   o browser", "3/7", 20)
+	line := spread("↑↓ thread   c comment   b browser", "3/7", 20)
 
 	if lipgloss.Width(line) != 20 || line[len(line)-3:] != "3/7" {
 		t.Fatalf("line = %q", line)

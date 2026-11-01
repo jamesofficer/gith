@@ -252,7 +252,7 @@ func (m Model) hints() (string, string) {
 			right = fmt.Sprintf("%d of %d", active.cursor+1, len(active.items))
 		}
 
-		return "↑↓ move   ←→ switch   enter open   o browser   r refresh   q quit", right
+		return "↑↓ move   ←→ switch   enter open   b browser   r refresh   q quit", right
 	}
 
 	switch state := m.open.state.(type) {
@@ -266,20 +266,20 @@ func (m Model) hints() (string, string) {
 				return "↑↓ jk pick lines   c comment on " + lines + "   esc cancel   q quit", ""
 			}
 
-			return "↑↓ jk line   c select   ←→ file   o browser   r refresh   esc back   q quit", ""
+			return "↑↓ jk line   c select   ←→ file   b browser   r refresh   esc back   q quit", ""
 
 		case *diffFailed:
-			return "r retry   o browser   esc back   q quit", ""
+			return "r retry   b browser   esc back   q quit", ""
 
 		case *diffLoading:
 			return "esc back   q quit", ""
 		}
 
 		if m.open.key.kind == github.KindPull {
-			return "↑↓ thread   d diff   c comment   o browser   r refresh   esc back   q quit", ""
+			return "↑↓ thread   d diff   c comment   b browser   r refresh   esc back   q quit", ""
 		}
 
-		return "↑↓ thread   c comment   o browser   r refresh   esc back   q quit", ""
+		return "↑↓ thread   c comment   b browser   r refresh   esc back   q quit", ""
 
 	case *detailFailed:
 		return "r retry   esc back   q quit", ""

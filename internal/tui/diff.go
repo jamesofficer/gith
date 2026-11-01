@@ -126,7 +126,7 @@ func (m Model) onDiffKey(loaded *detailLoaded, key string) (Model, tea.Cmd) {
 	case "backspace", "d":
 		return m.closeDiff(loaded), nil
 
-	case "o":
+	case "b":
 		return m, m.browse(m.open.key.number)
 
 	case "r":

@@ -43,7 +43,7 @@ func (m Model) detailView() string {
 
 		case *diffFailed:
 			post = m.frameBox(lipgloss.NewStyle().Foreground(colors.bad).Width(m.contentWidth()).Render(
-				"Could not load the diff. Press o to see it on GitHub.\n\n"+diff.err.Error(),
+				"Could not load the diff. Press b to see it on GitHub.\n\n"+diff.err.Error(),
 			), layout.postHeight)
 
 		case *diffLoaded:
@@ -188,10 +188,10 @@ func (m Model) postContent(loaded *detailLoaded) string {
 	}
 
 	if more := post.Code.MoreReplies; more > 0 {
-		note := fmt.Sprintf("%d more replies on GitHub. Press o to read them.", more)
+		note := fmt.Sprintf("%d more replies on GitHub. Press b to read them.", more)
 
 		if more == 1 {
-			note = "1 more reply on GitHub. Press o to read it."
+			note = "1 more reply on GitHub. Press b to read it."
 		}
 
 		sections = append(sections, m.indent(lipgloss.NewStyle().Foreground(m.tone().muted).Render(note)))

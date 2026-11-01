@@ -243,7 +243,7 @@ func (m Model) onListKey(key string) (Model, tea.Cmd) {
 	case "enter":
 		return m.openSelected()
 
-	case "o":
+	case "b":
 		if item, ok := active.current(); ok {
 			return m, m.browse(item.Number)
 		}
@@ -266,7 +266,7 @@ func (m Model) onDetailKey(key string) (Model, tea.Cmd) {
 	case "esc", "backspace":
 		m.open = nil
 
-	case "o":
+	case "b":
 		return m, m.browse(m.open.key.number)
 
 	case "r":

@@ -472,10 +472,10 @@ func TestRefreshLoadsNewData(t *testing.T) {
 
 func TestOpenInBrowser(t *testing.T) {
 	src := newSource()
-	m := press(t, start(t, src), char('o'))
+	m := press(t, start(t, src), char('b'))
 	m = press(t, press(t, m, key(tea.KeyDown)), key(tea.KeyEnter))
 	src.browseErr = errors.New("no browser")
-	m = press(t, m, char('o'))
+	m = press(t, m, char('b'))
 
 	if fmt.Sprint(src.browsed) != "[12 9]" {
 		t.Fatalf("browsed = %v", src.browsed)
