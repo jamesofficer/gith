@@ -20,6 +20,10 @@ type tone struct {
 	frame  color.Color
 	good   color.Color
 	bad    color.Color
+
+	// added and removed are the backgrounds of changed lines in a diff.
+	added   color.Color
+	removed color.Color
 }
 
 func (m Model) tone() tone {
@@ -32,6 +36,9 @@ func (m Model) tone() tone {
 		frame:  pick(lipgloss.Color("#A1A1AA"), lipgloss.Color("#71717A")),
 		good:   pick(lipgloss.Color("#15803D"), lipgloss.Color("#4ADE80")),
 		bad:    pick(lipgloss.Color("#B91C1C"), lipgloss.Color("#F87171")),
+
+		added:   pick(lipgloss.Color("#E6FFEC"), lipgloss.Color("#1B3326")),
+		removed: pick(lipgloss.Color("#FFEBE9"), lipgloss.Color("#3B1D22")),
 	}
 }
 
@@ -248,8 +255,23 @@ func (m Model) hints() (string, string) {
 		return "↑↓ move   ←→ switch   enter open   o browser   r refresh   q quit", right
 	}
 
-	switch m.open.state.(type) {
+	switch state := m.open.state.(type) {
 	case *detailLoaded:
+		switch state.diff.(type) {
+		case *diffLoaded:
+			return "↑↓ scroll   ←→ file   o browser   r refresh   esc back   q quit", ""
+
+		case *diffFailed:
+			return "r retry   o browser   esc back   q quit", ""
+
+		case *diffLoading:
+			return "esc back   q quit", ""
+		}
+
+		if m.open.key.kind == github.KindPull {
+			return "↑↓ thread   d diff   c comment   o browser   r refresh   esc back   q quit", ""
+		}
+
 		return "↑↓ thread   c comment   o browser   r refresh   esc back   q quit", ""
 
 	case *detailFailed:

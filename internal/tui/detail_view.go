@@ -27,24 +27,28 @@ func (m Model) detailView() string {
 		), layout.postHeight)
 
 	case *detailLoaded:
-		border := colors.accent
+		switch diff := state.diff.(type) {
+		case nil:
+			border := colors.accent
 
-		if state.compose != nil {
-			border = colors.frame
+			if state.compose != nil {
+				border = colors.frame
+			}
+
+			position := fmt.Sprintf("%d of %d", state.index+1, len(state.posts))
+			post = m.viewportPanel(position, border, layout.postHeight)
+
+		case *diffLoading:
+			post = m.frameBox(m.spin.View()+"  Loading the diff…", layout.postHeight)
+
+		case *diffFailed:
+			post = m.frameBox(lipgloss.NewStyle().Foreground(colors.bad).Width(m.contentWidth()).Render(
+				"Could not load the diff. Press o to see it on GitHub.\n\n"+diff.err.Error(),
+			), layout.postHeight)
+
+		case *diffLoaded:
+			post = m.viewportPanel(diffTitle(diff), colors.accent, layout.postHeight)
 		}
-
-		framed := m.panelStyle().
-			BorderForeground(border).
-			Width(m.width).
-			Height(m.viewport.Height() + m.frameHeight()).
-			Render(m.viewport.View())
-		position := fmt.Sprintf("%d of %d", state.index+1, len(state.posts))
-		framed = withTitle(framed, position, border)
-		post = lipgloss.NewStyle().
-			Width(m.width).
-			Height(layout.postHeight).
-			MaxHeight(layout.postHeight).
-			Render(framed)
 	}
 
 	parts := []string{layout.header, post}
@@ -54,6 +58,22 @@ func (m Model) detailView() string {
 	}
 
 	return strings.Join(append(parts, layout.footer), "\n\n")
+}
+
+// viewportPanel frames the viewport, with title on the top border, and
+// fills the given height.
+func (m Model) viewportPanel(title string, border color.Color, height int) string {
+	framed := m.panelStyle().
+		BorderForeground(border).
+		Width(m.width).
+		Height(m.viewport.Height() + m.frameHeight()).
+		Render(m.viewport.View())
+
+	return lipgloss.NewStyle().
+		Width(m.width).
+		Height(height).
+		MaxHeight(height).
+		Render(withTitle(framed, title, border))
 }
 
 // withTitle puts title at the left end of the top border of a framed box.

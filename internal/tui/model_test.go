@@ -11,6 +11,7 @@ import (
 	"charm.land/bubbles/v2/spinner"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/bluekeyes/go-gitdiff/gitdiff"
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/jamesofficer/gith/internal/github"
@@ -32,9 +33,12 @@ type fakeSource struct {
 	detailErr  error
 	commentErr error
 	browseErr  error
+	diff       string
+	diffErr    error
 
 	listCalls   int
 	detailCalls int
+	diffCalls   int
 	posted      []posted
 	browsed     []int
 }
@@ -67,6 +71,18 @@ func (f *fakeSource) Detail(_ context.Context, _ github.Kind, number int) (githu
 	}
 
 	return detail, nil
+}
+
+func (f *fakeSource) Diff(_ context.Context, _ int) ([]*gitdiff.File, error) {
+	f.diffCalls++
+
+	if f.diffErr != nil {
+		return nil, f.diffErr
+	}
+
+	files, _, err := gitdiff.Parse(strings.NewReader(f.diff))
+
+	return files, err
 }
 
 func (f *fakeSource) Comment(_ context.Context, number int, body string) (github.Post, error) {
