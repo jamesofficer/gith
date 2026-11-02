@@ -60,8 +60,20 @@ type diffMsg struct {
 	err  error
 }
 
+// newDiffLoaded opens the diff at the first file that is not viewed. When
+// all files are viewed, it opens at the first file.
 func newDiffLoaded(diff github.PullDiff) *diffLoaded {
-	return &diffLoaded{diff: diff, cursor: -1, lineOpen: map[codeSpot]bool{}}
+	loaded := &diffLoaded{diff: diff, cursor: -1, lineOpen: map[codeSpot]bool{}}
+
+	for i, file := range diff.Files {
+		if diff.Viewed[fileName(file)] != github.Viewed {
+			loaded.index = i
+
+			break
+		}
+	}
+
+	return loaded
 }
 
 // threadsOpen tells if the code comments on a line show in full.

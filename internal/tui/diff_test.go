@@ -555,6 +555,22 @@ func TestVMarksTheFileViewedAndMovesToTheNextFile(t *testing.T) {
 	}
 }
 
+func TestDiffOpensAtTheFirstFileThatIsNotViewed(t *testing.T) {
+	src := newSource()
+	m := threeFiles(t, src)
+	m = press(t, press(t, m, char('v')), key(tea.KeyEsc))
+
+	if m = press(t, m, char('d')); !strings.Contains(screen(m), "file 3 of 3") {
+		t.Fatalf("diff did not open at c.go:\n%s", screen(m))
+	}
+
+	src.viewed = map[string]github.ViewState{"a.go": github.Viewed, "b.go": github.Viewed, "c.go": github.Viewed}
+
+	if m = press(t, m, char('r')); !strings.Contains(screen(m), "file 1 of 3 · 3 viewed") {
+		t.Fatalf("diff with all files viewed did not open at the first file:\n%s", screen(m))
+	}
+}
+
 func TestViewedFileIsGrey(t *testing.T) {
 	m := threeFiles(t, newSource())
 	m = press(t, m, key(tea.KeyRight))
