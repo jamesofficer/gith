@@ -232,7 +232,7 @@ func TestDoubleCCommentsOnOneLine(t *testing.T) {
 	src.diff = twoFiles
 	m := press(t, openSettingPull(t, src), char('d'))
 	m = press(t, press(t, m, char('c')), char('c'))
-	m = press(t, typeText(t, m, "Why?"), ctrl('s'))
+	press(t, typeText(t, m, "Why?"), ctrl('s'))
 	line := github.DiffLine{Side: github.SideNew, Line: 1}
 
 	if len(src.codeComments) != 1 || src.codeComments[0].Start != line || src.codeComments[0].End != line {
