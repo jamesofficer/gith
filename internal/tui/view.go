@@ -273,7 +273,7 @@ func (m Model) hints() (string, string) {
 
 			if threads := codeThreads(state.detail.Thread); len(threads) > 0 {
 				if spot, ok := diff.cursorSpot(); ok && len(threads[spot]) > 0 {
-					hint += "enter comments   "
+					hint += "enter comments   R reply   "
 				}
 
 				if diff.collapsed {

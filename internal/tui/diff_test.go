@@ -309,9 +309,8 @@ func TestExistingCodeCommentsAreMarked(t *testing.T) {
 
 // pullWithCodeComment is pull request 4 with one comment and two replies on
 // the line "+next := 2" of twoFiles.
-func pullWithCodeComment(t *testing.T) Model {
+func pullWithCodeComment(t *testing.T, src *fakeSource) Model {
 	t.Helper()
-	src := newSource()
 	src.diff = twoFiles
 	src.details[4] = github.Detail{
 		Item: src.pulls[0],
@@ -321,6 +320,7 @@ func pullWithCodeComment(t *testing.T) Model {
 			Body:      "\nUse a constant here.\n\nIt is clearer.",
 			CreatedAt: when,
 			Code: &github.CodeThread{
+				ID:          501,
 				Path:        "timer.go",
 				Line:        2,
 				Side:        github.SideNew,
@@ -334,7 +334,7 @@ func pullWithCodeComment(t *testing.T) Model {
 }
 
 func TestCodeCommentShowsInFullWithItsReplies(t *testing.T) {
-	m := press(t, pullWithCodeComment(t), char('d'))
+	m := press(t, pullWithCodeComment(t, newSource()), char('d'))
 	view := screen(m)
 
 	for _, want := range []string{"▾ sam", "It is clearer.", "ada", "Done in the next commit.", "1 more reply on GitHub"} {
@@ -351,7 +351,7 @@ func TestCodeCommentShowsInFullWithItsReplies(t *testing.T) {
 }
 
 func TestECollapsesAllCommentsToAPreview(t *testing.T) {
-	m := press(t, press(t, pullWithCodeComment(t), char('d')), char('e'))
+	m := press(t, press(t, pullWithCodeComment(t, newSource()), char('d')), char('e'))
 	view := screen(m)
 
 	if preview := lineWith(view, "▸ sam"); !strings.Contains(preview, "▸ sam  Use a constant here.") || !strings.Contains(preview, "2 replies") {
@@ -370,7 +370,7 @@ func TestECollapsesAllCommentsToAPreview(t *testing.T) {
 }
 
 func TestEnterClosesAndOpensTheCommentsOfALine(t *testing.T) {
-	m := press(t, pullWithCodeComment(t), char('d'))
+	m := press(t, pullWithCodeComment(t, newSource()), char('d'))
 
 	if strings.Contains(screen(m), "enter comments") {
 		t.Fatal("hint shows on a line without comments")
@@ -392,6 +392,39 @@ func TestEnterClosesAndOpensTheCommentsOfALine(t *testing.T) {
 
 	if m = press(t, m, key(tea.KeyEnter)); !strings.Contains(screen(m), "It is clearer.") {
 		t.Fatalf("enter did not open the comment:\n%s", screen(m))
+	}
+}
+
+func TestShiftRRepliesToTheCommentOnTheLine(t *testing.T) {
+	src := newSource()
+	m := press(t, pullWithCodeComment(t, src), char('d'))
+	m = press(t, press(t, m, char('e')), char('R'))
+
+	if strings.Contains(screen(m), "Write a reply") {
+		t.Fatal("R opened a reply on a line without comments")
+	}
+
+	m = press(t, press(t, press(t, m, char('j')), char('j')), char('R'))
+
+	if !strings.Contains(screen(m), "Write a reply to sam on timer.go line 2") || !strings.Contains(screen(m), "It is clearer.") {
+		t.Fatalf("no reply box, or the comment is not open:\n%s", screen(m))
+	}
+
+	assertFillsScreen(t, m)
+	m = press(t, typeText(t, m, "Will do."), ctrl('s'))
+
+	if len(src.replies) != 1 || src.replies[0] != (posted{number: 501, body: "Will do."}) {
+		t.Fatalf("sent %+v", src.replies)
+	}
+
+	view := screen(m)
+
+	if strings.Contains(view, "Write a reply") || !strings.Contains(view, "Will do.") || !strings.Contains(view, "+next := 2") {
+		t.Fatalf("reply does not show in the diff:\n%s", view)
+	}
+
+	if m = press(t, m, key(tea.KeyEnter)); !strings.Contains(lineWith(screen(m), "▸ sam"), "3 replies") {
+		t.Fatalf("reply count did not change:\n%s", screen(m))
 	}
 }
 
@@ -474,7 +507,7 @@ func TestShiftNAndPMoveBetweenComments(t *testing.T) {
 }
 
 func TestCursorSkipsCommentRows(t *testing.T) {
-	m := press(t, pullWithCodeComment(t), char('d'))
+	m := press(t, pullWithCodeComment(t, newSource()), char('d'))
 	m = press(t, m, char('j'))
 	m = press(t, m, char('j'))
 	m = press(t, m, char('k'))

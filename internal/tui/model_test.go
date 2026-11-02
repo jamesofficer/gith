@@ -41,6 +41,7 @@ type fakeSource struct {
 	diffCalls   int
 
 	codeComments []github.CodeComment
+	replies      []posted
 	posted       []posted
 	browsed      []int
 }
@@ -97,6 +98,17 @@ func (f *fakeSource) CommentOnCode(_ context.Context, _ int, comment github.Code
 	code := &github.CodeThread{Path: comment.Path, Line: comment.End.Line, Side: comment.End.Side}
 
 	return github.Post{Author: "ada", Body: comment.Body, CreatedAt: when, Code: code}, nil
+}
+
+// ReplyToCode records the ID of the comment in posted.number.
+func (f *fakeSource) ReplyToCode(_ context.Context, _ int, thread int64, body string) (github.Reply, error) {
+	f.replies = append(f.replies, posted{number: int(thread), body: body})
+
+	if f.commentErr != nil {
+		return github.Reply{}, f.commentErr
+	}
+
+	return github.Reply{Author: "ada", Body: body, CreatedAt: when}, nil
 }
 
 func (f *fakeSource) Comment(_ context.Context, number int, body string) (github.Post, error) {

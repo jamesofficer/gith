@@ -96,11 +96,14 @@ type detailMsg struct {
 	err    error
 }
 
+// commentMsg is a sent comment. reply is set for a reply, and post for
+// all other comments.
 type commentMsg struct {
-	req  int
-	key  itemKey
-	post github.Post
-	err  error
+	req   int
+	key   itemKey
+	post  github.Post
+	reply github.Reply
+	err   error
 }
 
 type browseMsg struct{ err error }

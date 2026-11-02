@@ -93,6 +93,8 @@ type CodeComment struct {
 
 // CodeThread is the place of a code comment in the diff and its replies.
 type CodeThread struct {
+	// ID is the number of the first comment. A reply goes to it.
+	ID   int64
 	Path string
 	Line int
 	Side Side
@@ -135,6 +137,7 @@ type Source interface {
 	Detail(ctx context.Context, kind Kind, number int) (Detail, error)
 	Diff(ctx context.Context, number int) (PullDiff, error)
 	CommentOnCode(ctx context.Context, number int, comment CodeComment) (Post, error)
+	ReplyToCode(ctx context.Context, number int, thread int64, body string) (Reply, error)
 	Comment(ctx context.Context, number int, body string) (Post, error)
 	Browse(ctx context.Context, number int) error
 }
@@ -332,7 +335,7 @@ const threadQuery = `query($owner: String!, $name: String!, $number: Int!, $afte
           path line originalLine diffSide isResolved isOutdated
           comments(first: 100) {
             totalCount
-            nodes { author { login } body createdAt state diffHunk }
+            nodes { databaseId author { login } body createdAt state diffHunk }
           }
         }
         pageInfo { hasNextPage endCursor }
@@ -472,6 +475,39 @@ func (c CLI) CommentOnCode(ctx context.Context, number int, comment CodeComment)
 	}
 
 	return parseCreatedCodePost(out)
+}
+
+// ReplyToCode adds a reply to the code comment with the ID thread.
+func (c CLI) ReplyToCode(ctx context.Context, number int, thread int64, body string) (Reply, error) {
+	body = strings.TrimSpace(body)
+
+	if body == "" {
+		return Reply{}, errors.New("reply is empty")
+	}
+
+	payload, err := json.Marshal(struct {
+		Body string `json:"body"`
+	}{Body: body})
+
+	if err != nil {
+		return Reply{}, err
+	}
+
+	path := fmt.Sprintf("repos/%s/pulls/%d/comments/%d/replies", c.repo.FullName(), number, thread)
+	args := c.apiArgs("--method", "POST", "--input", "-", "-H", "Content-Type:application/json", path)
+	out, err := c.run(ctx, payload, args...)
+
+	if err != nil {
+		return Reply{}, err
+	}
+
+	post, err := parseCreatedPost(out)
+
+	if err != nil {
+		return Reply{}, err
+	}
+
+	return Reply{Author: post.Author, Body: post.Body, CreatedAt: post.CreatedAt}, nil
 }
 
 // Browse opens an issue or a pull request in the web browser.

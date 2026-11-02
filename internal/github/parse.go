@@ -271,6 +271,7 @@ func parseCreatedCodePost(data []byte) (Post, error) {
 	}
 
 	var raw struct {
+		ID       int64  `json:"id"`
 		Path     string `json:"path"`
 		Line     int    `json:"line"`
 		Side     Side   `json:"side"`
@@ -281,7 +282,7 @@ func parseCreatedCodePost(data []byte) (Post, error) {
 		return Post{}, fmt.Errorf("gh did not return the comment: %w", err)
 	}
 
-	post.Code = &CodeThread{Path: raw.Path, Line: raw.Line, Side: raw.Side, Hunk: raw.DiffHunk}
+	post.Code = &CodeThread{ID: raw.ID, Path: raw.Path, Line: raw.Line, Side: raw.Side, Hunk: raw.DiffHunk}
 
 	return post, nil
 }
@@ -309,11 +310,12 @@ func sortThread(thread []Post) {
 }
 
 type rawCodeComment struct {
-	Author    rawAuthor `json:"author"`
-	Body      string    `json:"body"`
-	CreatedAt time.Time `json:"createdAt"`
-	State     string    `json:"state"`
-	DiffHunk  string    `json:"diffHunk"`
+	DatabaseID int64     `json:"databaseId"`
+	Author     rawAuthor `json:"author"`
+	Body       string    `json:"body"`
+	CreatedAt  time.Time `json:"createdAt"`
+	State      string    `json:"state"`
+	DiffHunk   string    `json:"diffHunk"`
 }
 
 type rawThread struct {
@@ -387,6 +389,7 @@ func parseThreadPage(data []byte) ([]Post, string, error) {
 			Body:      root.Body,
 			CreatedAt: root.CreatedAt,
 			Code: &CodeThread{
+				ID:          root.DatabaseID,
 				Path:        thread.Path,
 				Line:        lineOf(thread),
 				Side:        thread.DiffSide,

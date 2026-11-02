@@ -205,6 +205,9 @@ func (m Model) onDiffKey(loaded *detailLoaded, key string) (Model, tea.Cmd) {
 			diff.follow = true
 		}
 
+	case "R":
+		return m.startReply(loaded, diff)
+
 	case "e":
 		diff.collapsed = !diff.collapsed
 		clear(diff.lineOpen)
@@ -293,14 +296,38 @@ func (m Model) selectLines(loaded *detailLoaded, diff *diffLoaded) (Model, tea.C
 
 	page := diff.page()
 	first, last := min(diff.anchor, diff.cursor), max(diff.anchor, diff.cursor)
-	target := &github.CodeComment{
+	target := &codeTarget{github.CodeComment{
 		Commit: diff.diff.Commit,
 		Path:   page.path,
 		Start:  page.lines[first].spot,
 		End:    page.lines[last].spot,
-	}
+	}}
 
 	return m.startCompose(target)
+}
+
+// startReply opens the comment box for a reply to the newest code comment on
+// the cursor line. The line shows its comments in full, to give context.
+func (m Model) startReply(loaded *detailLoaded, diff *diffLoaded) (Model, tea.Cmd) {
+	spot, ok := diff.cursorSpot()
+	here := codeThreads(loaded.detail.Thread)[spot]
+
+	if !ok || diff.selecting || len(here) == 0 {
+		return m, nil
+	}
+
+	post := loaded.detail.Thread[here[len(here)-1]]
+
+	if post.Code.ID == 0 {
+		m.problem = "gith cannot reply to this comment. Press b to reply on GitHub."
+
+		return m, nil
+	}
+
+	diff.lineOpen[spot] = true
+	diff.follow = true
+
+	return m.startCompose(&replyTarget{author: post.Author, thread: post.Code})
 }
 
 // jump moves the cursor in the direction dir to the next line where stop is
