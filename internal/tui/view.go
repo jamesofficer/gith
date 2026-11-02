@@ -90,14 +90,19 @@ func (m Model) listHeader() string {
 	colors := m.tone()
 	brand := lipgloss.NewStyle().Bold(true).Foreground(colors.accent).Render("gith")
 	repo := lipgloss.NewStyle().Foreground(colors.muted).Render(m.repo)
-	issues := m.tab("Issues", m.issues, m.kind == github.KindIssue)
-	pulls := m.tab("Pull requests", m.pulls, m.kind == github.KindPull)
+	issues := m.tab("Issues", github.KindIssue)
+	pulls := m.tab("Pull requests", github.KindPull)
 	tabs := lipgloss.JoinHorizontal(lipgloss.Bottom, issues.label, "    ", pulls.label)
 	under := lipgloss.JoinHorizontal(lipgloss.Bottom, issues.under, "    ", pulls.under)
-
-	return fitLine(spread(brand, repo, m.width), m.width) + "\n\n" +
+	header := fitLine(spread(brand, repo, m.width), m.width) + "\n\n" +
 		fitLine(tabs, m.width) + "\n" +
 		fitLine(under, m.width)
+
+	if m.searching() {
+		header += "\n" + fitLine(m.search.View(), m.width)
+	}
+
+	return header
 }
 
 type tab struct {
@@ -105,12 +110,18 @@ type tab struct {
 	under string
 }
 
-func (m Model) tab(name string, items list, active bool) tab {
+func (m Model) tab(name string, kind github.Kind) tab {
 	colors := m.tone()
+	items := m.listOf(kind)
+	active := m.kind == kind
 	text := name
 
 	if !items.loading && items.err == nil {
-		text = fmt.Sprintf("%s  %d", name, len(items.items))
+		text = fmt.Sprintf("%s  %d", name, items.total())
+	}
+
+	if !items.loading && items.err == nil && items.filtered() {
+		text = fmt.Sprintf("%s  %d of %d", name, len(items.shown()), items.total())
 	}
 
 	width := lipgloss.Width(text)
@@ -140,17 +151,23 @@ func (m Model) listBody(height int) string {
 		)
 	}
 
-	if len(active.items) == 0 {
+	if active.total() == 0 {
 		return lipgloss.NewStyle().Foreground(colors.muted).Render("No open " + name + ".")
 	}
 
-	start, end := window(active.cursor, len(active.items), height)
-	numW := numberWidth(active.items)
+	items := active.shown()
+
+	if len(items) == 0 {
+		return lipgloss.NewStyle().Foreground(colors.muted).Render("No open " + name + " match the search.")
+	}
+
+	start, end := window(active.position(), len(items), height)
+	numW := numberWidth(items)
 	lines := make([]string, 0, end-start)
 	now := time.Now()
 
 	for i := start; i < end; i++ {
-		lines = append(lines, m.row(active.items[i], i == active.cursor, numW, m.width, now))
+		lines = append(lines, m.row(items[i], i == active.position(), numW, m.width, now))
 	}
 
 	return strings.Join(lines, "\n")
@@ -170,7 +187,13 @@ func (m Model) row(item github.Item, selected bool, numW, width int, now time.Ti
 	), numW)
 	var tail []string
 
-	for _, part := range []string{m.assigneeBadge(item.Assignees), commentChip(item.Comments)} {
+	author := ""
+
+	if item.Author != "" {
+		author = muted.Render("by " + ansi.Truncate(item.Author, 12, "…"))
+	}
+
+	for _, part := range []string{author, m.assigneeBadge(item.Assignees), commentChip(item.Comments)} {
 		if part != "" {
 			tail = append(tail, part)
 		}
@@ -258,13 +281,22 @@ func (m Model) footer() string {
 func (m Model) hints() (string, string) {
 	if m.open == nil {
 		active := m.listOf(m.kind)
+		count := len(active.shown())
 		right := ""
 
-		if !active.loading && active.err == nil && len(active.items) > 0 {
-			right = fmt.Sprintf("%d of %d", active.cursor+1, len(active.items))
+		if !active.loading && active.err == nil && count > 0 {
+			right = fmt.Sprintf("%d of %d", active.position()+1, count)
 		}
 
-		return "↑↓ move   ←→ switch   enter open   b browser   r refresh   q quit", right
+		switch {
+		case m.search.Focused():
+			return "↑↓ move   enter open   esc clear", right
+
+		case m.search.Value() != "":
+			return "↑↓ move   ←→ switch   enter open   / search   esc clear   q quit", right
+		}
+
+		return "↑↓ move   ←→ switch   enter open   / search   r refresh   q quit", right
 	}
 
 	switch state := m.open.state.(type) {
