@@ -111,6 +111,18 @@ func TestDiffErrorCanBeRetried(t *testing.T) {
 	}
 }
 
+func TestRefreshOnTheThreadAlsoLoadsTheNewDiff(t *testing.T) {
+	src := newSource()
+	src.diff = twoFiles
+	m := press(t, press(t, openSettingPull(t, src), char('d')), key(tea.KeyEsc))
+	src.diff = strings.Replace(twoFiles, "+next := 2", "+pushed := 3", 1)
+	m = press(t, press(t, m, char('r')), char('d'))
+
+	if view := screen(m); !strings.Contains(view, "+pushed := 3") {
+		t.Fatalf("d after r shows the old diff:\n%s", view)
+	}
+}
+
 func TestDiffKeyOnIssueDoesNothing(t *testing.T) {
 	src := newSource()
 	m := press(t, openCacheIssue(t, src), char('d'))
