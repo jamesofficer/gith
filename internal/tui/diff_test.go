@@ -395,6 +395,84 @@ func TestEnterClosesAndOpensTheCommentsOfALine(t *testing.T) {
 	}
 }
 
+// twoFilesWithBlocks has two blocks of changes in a.go, after 30 lines that
+// did not change, and one block in b.go. Each file has a comment.
+func twoFilesWithBlocks(t *testing.T) Model {
+	t.Helper()
+	var diff strings.Builder
+	diff.WriteString("diff --git a/a.go b/a.go\n--- a/a.go\n+++ b/a.go\n@@ -1,34 +1,34 @@\n")
+
+	for i := 1; i <= 30; i++ {
+		fmt.Fprintf(&diff, " same-%02d\n", i)
+	}
+
+	diff.WriteString("-two\n+TWO\n three\n-four\n+FOUR\n five\n")
+	diff.WriteString("diff --git a/b.go b/b.go\n--- a/b.go\n+++ b/b.go\n@@ -1,2 +1,2 @@\n-x\n+X\n y\n")
+	src := newSource()
+	src.diff = diff.String()
+	src.details[4] = github.Detail{
+		Item: src.pulls[0],
+		Body: "Adds a setting.",
+		Thread: []github.Post{
+			{Author: "sam", Body: "On three.", CreatedAt: when, Code: &github.CodeThread{Path: "a.go", Line: 32, Side: github.SideNew}},
+			{Author: "sam", Body: "On y.", CreatedAt: when, Code: &github.CodeThread{Path: "b.go", Line: 2, Side: github.SideNew}},
+		},
+	}
+
+	return press(t, press(t, start(t, src), key(tea.KeyRight)), key(tea.KeyEnter))
+}
+
+func TestNAndPMoveBetweenBlocksOfChanges(t *testing.T) {
+	m := press(t, press(t, twoFilesWithBlocks(t), char('d')), char('n'))
+
+	if !strings.Contains(cursorLine(m), "-two") || !strings.Contains(screen(m), "+TWO") {
+		t.Fatalf("n did not show the first change:\n%s", screen(m))
+	}
+
+	steps := []struct {
+		key  tea.KeyPressMsg
+		want string
+	}{
+		{char('n'), "-four"},
+		{char('n'), "-x"},
+		{char('n'), "-x"},
+		{char('p'), "-four"},
+		{char('p'), "-two"},
+	}
+
+	for _, s := range steps {
+		m = press(t, m, s.key)
+
+		if !strings.Contains(cursorLine(m), s.want) {
+			t.Fatalf("after %s, cursor is not on %s:\n%s", s.key, s.want, screen(m))
+		}
+	}
+}
+
+func TestShiftNAndPMoveBetweenComments(t *testing.T) {
+	m := press(t, twoFilesWithBlocks(t), char('d'))
+	steps := []struct {
+		key  tea.KeyPressMsg
+		want string
+	}{
+		{char('N'), "three"},
+		{char('N'), " y"},
+		{char('P'), "three"},
+	}
+
+	for _, s := range steps {
+		m = press(t, m, s.key)
+
+		if !strings.Contains(cursorLine(m), s.want) {
+			t.Fatalf("after %s, cursor is not on %s:\n%s", s.key, s.want, screen(m))
+		}
+	}
+
+	if !strings.Contains(screen(m), "On three.") {
+		t.Fatalf("the comment under the cursor is not on screen:\n%s", screen(m))
+	}
+}
+
 func TestCursorSkipsCommentRows(t *testing.T) {
 	m := press(t, pullWithCodeComment(t), char('d'))
 	m = press(t, m, char('j'))

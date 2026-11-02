@@ -269,7 +269,7 @@ func (m Model) hints() (string, string) {
 				return "↑↓ jk pick lines   c comment on " + lines + "   esc cancel", ""
 			}
 
-			hint := "↑↓ jk line   "
+			hint := "↑↓ jk line   n p change   "
 
 			if threads := codeThreads(state.detail.Thread); len(threads) > 0 {
 				if spot, ok := diff.cursorSpot(); ok && len(threads[spot]) > 0 {
@@ -277,9 +277,9 @@ func (m Model) hints() (string, string) {
 				}
 
 				if diff.collapsed {
-					hint += "e expand   "
+					hint += "N P comment   e expand   "
 				} else {
-					hint += "e collapse   "
+					hint += "N P comment   e collapse   "
 				}
 			}
 

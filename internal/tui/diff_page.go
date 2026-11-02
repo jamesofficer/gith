@@ -63,11 +63,7 @@ func (m Model) diffContent(loaded *detailLoaded, diff *diffLoaded, width int) (s
 		diff.threads = nil
 	}
 
-	if diff.pages[diff.index] == nil {
-		diff.pages[diff.index] = m.renderFile(diff.diff.Files[diff.index], width)
-	}
-
-	page := diff.pages[diff.index]
+	page := m.pageAt(diff, diff.index)
 
 	if diff.cursor < 0 {
 		diff.cursor = moveCursor(page.lines, -1, 1, -1)
@@ -134,6 +130,15 @@ func (m Model) diffContent(loaded *detailLoaded, diff *diffLoaded, width int) (s
 	}
 
 	return strings.Join(rows, "\n"), top, bottom
+}
+
+// pageAt is file i of the diff. It renders the file when it is first needed.
+func (m Model) pageAt(diff *diffLoaded, i int) *filePage {
+	if diff.pages[i] == nil {
+		diff.pages[i] = m.renderFile(diff.diff.Files[i], diff.pagesW)
+	}
+
+	return diff.pages[i]
 }
 
 // inlineThreads is the code comments under a line, at the column of the +

@@ -498,8 +498,14 @@ func (m Model) sync() Model {
 	m.viewport.SetContent(content)
 
 	if showDiff && diff.follow {
-		diff.follow = false
-		m.viewport.SetYOffset(rowsInView(m.viewport.YOffset(), m.viewport.Height(), cursorTop, cursorBottom))
+		offset := rowsInView(m.viewport.YOffset(), m.viewport.Height(), cursorTop, cursorBottom)
+
+		if diff.jumped {
+			offset = max(0, cursorTop-jumpContext)
+		}
+
+		diff.follow, diff.jumped = false, false
+		m.viewport.SetYOffset(offset)
 	}
 
 	return m

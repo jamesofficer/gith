@@ -6,6 +6,7 @@ import (
 	"math"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/bluekeyes/go-gitdiff/gitdiff"
 
 	"github.com/jamesofficer/gith/internal/github"
 )
@@ -33,8 +34,10 @@ type diffLoaded struct {
 	anchor    int
 	selecting bool
 
-	// follow scrolls the view to the cursor at the next sync.
+	// follow scrolls the view to the cursor at the next sync. jumped also
+	// puts the cursor near the top, so the lines under it show.
 	follow bool
+	jumped bool
 
 	// collapsed shows only the start of each code comment. lineOpen holds
 	// the lines that enter opened or closed against that rule.
@@ -128,6 +131,9 @@ func (m Model) applyDiff(msg diffMsg) Model {
 // arrowLines is the number of lines that an arrow key moves the cursor.
 const arrowLines = 6
 
+// jumpContext is the number of rows that show above the cursor after a jump.
+const jumpContext = 3
+
 func (m Model) onDiffKey(loaded *detailLoaded, key string) (Model, tea.Cmd) {
 	diff, _ := loaded.diff.(*diffLoaded)
 
@@ -203,6 +209,18 @@ func (m Model) onDiffKey(loaded *detailLoaded, key string) (Model, tea.Cmd) {
 		diff.collapsed = !diff.collapsed
 		clear(diff.lineOpen)
 		diff.follow = true
+
+	case "n":
+		return m.jump(diff, 1, changeStart), nil
+
+	case "p":
+		return m.jump(diff, -1, changeStart), nil
+
+	case "N":
+		return m.jump(diff, 1, hasThreads(loaded.detail.Thread)), nil
+
+	case "P":
+		return m.jump(diff, -1, hasThreads(loaded.detail.Thread)), nil
 	}
 
 	return m, nil
@@ -283,6 +301,66 @@ func (m Model) selectLines(loaded *detailLoaded, diff *diffLoaded) (Model, tea.C
 	}
 
 	return m.startCompose(target)
+}
+
+// jump moves the cursor in the direction dir to the next line where stop is
+// true. When the shown file has no such line, it looks in the next files.
+func (m Model) jump(diff *diffLoaded, dir int, stop func(*filePage, int) bool) Model {
+	if diff.page() == nil || diff.cursor < 0 || diff.selecting {
+		return m
+	}
+
+	from := diff.cursor
+
+	for index := diff.index; index >= 0 && index < len(diff.diff.Files); index += dir {
+		page := m.pageAt(diff, index)
+
+		if index != diff.index {
+			from = -1
+
+			if dir < 0 {
+				from = len(page.lines)
+			}
+		}
+
+		for i := from + dir; i >= 0 && i < len(page.lines); i += dir {
+			if !stop(page, i) {
+				continue
+			}
+
+			m = m.moveFile(diff, index-diff.index)
+			diff.cursor = i
+			diff.follow, diff.jumped = true, true
+
+			return m
+		}
+	}
+
+	return m
+}
+
+// changeStart tells if line i is the first added or removed line of a block.
+func changeStart(page *filePage, i int) bool {
+	line := page.lines[i]
+
+	if !line.code || line.op == gitdiff.OpContext {
+		return false
+	}
+
+	before := page.lines[i-1]
+
+	return !before.code || before.op == gitdiff.OpContext
+}
+
+// hasThreads tells if a line has code comments.
+func hasThreads(thread []github.Post) func(*filePage, int) bool {
+	threads := codeThreads(thread)
+
+	return func(page *filePage, i int) bool {
+		line := page.lines[i]
+
+		return line.code && len(threads[codeSpot{path: page.path, spot: line.spot}]) > 0
+	}
 }
 
 // page is the rendered page of the shown file, or nil before the first sync.
