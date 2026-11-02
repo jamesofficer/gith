@@ -208,6 +208,9 @@ func (m Model) onDiffKey(loaded *detailLoaded, key string) (Model, tea.Cmd) {
 	case "R":
 		return m.startReply(loaded, diff)
 
+	case "v":
+		return m.toggleViewed(diff)
+
 	case "e":
 		diff.collapsed = !diff.collapsed
 		clear(diff.lineOpen)
@@ -404,7 +407,105 @@ func diffTitle(diff *diffLoaded) string {
 		return "no files"
 	}
 
-	return fmt.Sprintf("file %d of %d", diff.index+1, len(diff.diff.Files))
+	title := fmt.Sprintf("file %d of %d", diff.index+1, len(diff.diff.Files))
+	viewed := 0
+
+	for _, file := range diff.diff.Files {
+		if diff.diff.Viewed[fileName(file)] == github.Viewed {
+			viewed++
+		}
+	}
+
+	if viewed > 0 {
+		title += fmt.Sprintf(" · %d viewed", viewed)
+	}
+
+	return title
+}
+
+// viewedMsg is the answer to a change of the viewed mark of a file. before
+// is the state to go back to when the change failed.
+type viewedMsg struct {
+	key    itemKey
+	path   string
+	before github.ViewState
+	err    error
+}
+
+// toggleViewed marks the shown file as viewed and moves to the next file that
+// is not viewed. On a viewed file, it removes the mark. The screen changes
+// at once. applyViewed puts the mark back if GitHub refuses the change.
+func (m Model) toggleViewed(diff *diffLoaded) (Model, tea.Cmd) {
+	if len(diff.diff.Files) == 0 || diff.selecting {
+		return m, nil
+	}
+
+	path := fileName(diff.diff.Files[diff.index])
+	before := diff.diff.Viewed[path]
+	viewed := before != github.Viewed
+	after := github.Unviewed
+
+	if viewed {
+		after = github.Viewed
+	}
+
+	diff.setViewed(path, after)
+	source, key, pull := m.source, m.open.key, diff.diff.ID
+	cmd := request(func(ctx context.Context) tea.Msg {
+		return viewedMsg{key: key, path: path, before: before, err: source.SetViewed(ctx, pull, path, viewed)}
+	})
+
+	if !viewed {
+		return m, cmd
+	}
+
+	for step := 1; step < len(diff.diff.Files); step++ {
+		next := (diff.index + step) % len(diff.diff.Files)
+
+		if diff.diff.Viewed[fileName(diff.diff.Files[next])] != github.Viewed {
+			return m.moveFile(diff, next-diff.index), cmd
+		}
+	}
+
+	return m, cmd
+}
+
+// applyViewed puts the viewed mark back when GitHub refused the change.
+func (m Model) applyViewed(msg viewedMsg) Model {
+	if msg.err == nil {
+		return m
+	}
+
+	name := "mark " + msg.path + " as viewed"
+
+	if msg.before == github.Viewed {
+		name = "remove the viewed mark from " + msg.path
+	}
+
+	m.problem = "Could not " + name + ". " + msg.err.Error()
+
+	if cached, ok := m.diffs[msg.key]; ok {
+		cached.Viewed[msg.path] = msg.before
+	}
+
+	if loaded := m.loaded(); loaded != nil && m.open.key == msg.key {
+		if diff, ok := loaded.diff.(*diffLoaded); ok {
+			diff.setViewed(msg.path, msg.before)
+		}
+	}
+
+	return m
+}
+
+// setViewed changes the viewed state of a file, and draws the file again.
+func (d *diffLoaded) setViewed(path string, state github.ViewState) {
+	d.diff.Viewed[path] = state
+
+	for i, file := range d.diff.Files {
+		if fileName(file) == path && d.pages != nil {
+			d.pages[i] = nil
+		}
+	}
 }
 
 // linesName names the lines of a code comment, such as "lines 10–12".

@@ -183,6 +183,9 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 	case commentMsg:
 		return m.applyComment(msg)
 
+	case viewedMsg:
+		return m.applyViewed(msg), nil
+
 	case browseMsg:
 		if msg.err != nil {
 			m.problem = "Could not open the browser. " + msg.err.Error()

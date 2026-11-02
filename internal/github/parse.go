@@ -287,20 +287,50 @@ func parseCreatedCodePost(data []byte) (Post, error) {
 	return post, nil
 }
 
-func parseHeadCommit(data []byte) (string, error) {
+// parseFilesPage reads one page of the files of a pull request. The ID and
+// the commit come with each page.
+func parseFilesPage(data []byte) (PullDiff, string, error) {
 	var raw struct {
-		HeadRefOid string `json:"headRefOid"`
+		Data struct {
+			Repository *struct {
+				PullRequest *struct {
+					ID         string `json:"id"`
+					HeadRefOid string `json:"headRefOid"`
+					Files      struct {
+						Nodes []struct {
+							Path   string    `json:"path"`
+							Viewed ViewState `json:"viewerViewedState"`
+						} `json:"nodes"`
+						PageInfo pageInfo `json:"pageInfo"`
+					} `json:"files"`
+				} `json:"pullRequest"`
+			} `json:"repository"`
+		} `json:"data"`
 	}
 
 	if err := json.Unmarshal(data, &raw); err != nil {
-		return "", fmt.Errorf("gh did not return the head commit: %w", err)
+		return PullDiff{}, "", err
 	}
 
-	if raw.HeadRefOid == "" {
-		return "", errors.New("gh did not return the head commit")
+	pull := raw.Data.Repository
+
+	if pull == nil || pull.PullRequest == nil || pull.PullRequest.ID == "" || pull.PullRequest.HeadRefOid == "" {
+		return PullDiff{}, "", errors.New("gh did not return the pull request")
 	}
 
-	return raw.HeadRefOid, nil
+	next, err := pull.PullRequest.Files.PageInfo.next()
+
+	if err != nil {
+		return PullDiff{}, "", err
+	}
+
+	page := PullDiff{ID: pull.PullRequest.ID, Commit: pull.PullRequest.HeadRefOid, Viewed: map[string]ViewState{}}
+
+	for _, file := range pull.PullRequest.Files.Nodes {
+		page.Viewed[file.Path] = file.Viewed
+	}
+
+	return page, next, nil
 }
 
 func sortThread(thread []Post) {

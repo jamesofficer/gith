@@ -3,6 +3,7 @@ package tui
 import (
 	"errors"
 	"fmt"
+	"image/color"
 	"strings"
 	"testing"
 
@@ -233,8 +234,7 @@ func TestSelectedLinesStayHighlightedWhileYouWrite(t *testing.T) {
 	m := press(t, openSettingPull(t, src), char('d'))
 	m = press(t, press(t, m, char('j')), char('c'))
 	m = press(t, press(t, m, char('j')), char('c'))
-	r, g, b, _ := m.tone().selected.RGBA()
-	highlight := fmt.Sprintf("48;2;%d;%d;%d", r>>8, g>>8, b>>8)
+	highlight := ansiBackground(m.tone().selected)
 
 	for text, want := range map[string]bool{"context": false, "old": true, "first": true, "second": false} {
 		if row := lineWith(m.View().Content, text); strings.Contains(row, highlight) != want {
@@ -504,6 +504,96 @@ func TestShiftNAndPMoveBetweenComments(t *testing.T) {
 	if !strings.Contains(screen(m), "On three.") {
 		t.Fatalf("the comment under the cursor is not on screen:\n%s", screen(m))
 	}
+}
+
+// threeFiles is a diff of a.go, b.go, and c.go. b.go is viewed, and c.go
+// changed after it was viewed.
+func threeFiles(t *testing.T, src *fakeSource) Model {
+	t.Helper()
+	var diff strings.Builder
+
+	for _, name := range []string{"a", "b", "c"} {
+		fmt.Fprintf(&diff, "diff --git a/%[1]s.go b/%[1]s.go\n--- a/%[1]s.go\n+++ b/%[1]s.go\n@@ -1 +1 @@\n-old_%[1]s\n+new_%[1]s\n", name)
+	}
+
+	src.diff = diff.String()
+	src.viewed = map[string]github.ViewState{"b.go": github.Viewed, "c.go": github.ChangedSinceViewed}
+
+	return press(t, openSettingPull(t, src), char('d'))
+}
+
+func TestVMarksTheFileViewedAndMovesToTheNextFile(t *testing.T) {
+	src := newSource()
+	m := threeFiles(t, src)
+
+	if title := lineWith(screen(m), "file 1 of 3"); !strings.Contains(title, "file 1 of 3 · 1 viewed") {
+		t.Fatalf("title = %q", title)
+	}
+
+	m = press(t, m, char('v'))
+
+	if len(src.viewedCalls) != 1 || src.viewedCalls[0] != (viewedCall{pull: "PR_4", path: "a.go", viewed: true}) {
+		t.Fatalf("sent %+v", src.viewedCalls)
+	}
+
+	view := screen(m)
+
+	if !strings.Contains(view, "file 3 of 3 · 2 viewed") || !strings.Contains(lineWith(view, "c.go"), "Changed since viewed") {
+		t.Fatalf("v did not move past the viewed file to c.go:\n%s", view)
+	}
+
+	m = press(t, press(t, m, key(tea.KeyLeft)), key(tea.KeyLeft))
+
+	if !strings.Contains(lineWith(screen(m), "a.go"), "✓ Viewed") {
+		t.Fatalf("a.go is not marked:\n%s", screen(m))
+	}
+
+	m = press(t, m, char('v'))
+
+	if last := src.viewedCalls[len(src.viewedCalls)-1]; last.viewed || !strings.Contains(screen(m), "file 1 of 3 · 1 viewed") || strings.Contains(screen(m), "✓ Viewed") {
+		t.Fatalf("second v did not remove the mark (%+v):\n%s", last, screen(m))
+	}
+}
+
+func TestViewedFileIsGrey(t *testing.T) {
+	m := threeFiles(t, newSource())
+	m = press(t, m, key(tea.KeyRight))
+	colors := m.tone()
+	faded, added := ansiBackground(colors.fadedAdded), ansiBackground(colors.added)
+
+	if row := lineWith(m.View().Content, "new_b"); !strings.Contains(row, faded) || strings.Contains(row, added) {
+		t.Fatalf("viewed row is not faded: %q", row)
+	}
+
+	m = press(t, m, key(tea.KeyRight))
+
+	if row := lineWith(m.View().Content, "new_c"); strings.Contains(row, faded) || !strings.Contains(row, added) {
+		t.Fatalf("row of a file that changed since viewed is faded: %q", row)
+	}
+}
+
+func TestViewedMarkGoesBackWhenGitHubRefusesIt(t *testing.T) {
+	src := newSource()
+	src.viewedErr = errors.New("forbidden")
+	m := threeFiles(t, src)
+	m = press(t, m, char('v'))
+
+	if !strings.Contains(screen(m), "Could not mark a.go as viewed. forbidden") || !strings.Contains(screen(m), "· 1 viewed") {
+		t.Fatalf("no error, or the count did not go back:\n%s", screen(m))
+	}
+
+	m = press(t, press(t, m, key(tea.KeyLeft)), key(tea.KeyLeft))
+
+	if strings.Contains(lineWith(screen(m), "a.go"), "✓ Viewed") {
+		t.Fatalf("a.go is still marked:\n%s", screen(m))
+	}
+}
+
+// ansiBackground is the escape code that sets c as the background.
+func ansiBackground(c color.Color) string {
+	r, g, b, _ := c.RGBA()
+
+	return fmt.Sprintf("48;2;%d;%d;%d", r>>8, g>>8, b>>8)
 }
 
 func TestCursorSkipsCommentRows(t *testing.T) {

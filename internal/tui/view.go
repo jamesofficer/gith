@@ -26,6 +26,11 @@ type tone struct {
 	added    color.Color
 	removed  color.Color
 	selected color.Color
+
+	// faded, fadedAdded and fadedRemoved draw the code of a viewed file.
+	faded        color.Color
+	fadedAdded   color.Color
+	fadedRemoved color.Color
 }
 
 func (m Model) tone() tone {
@@ -42,6 +47,10 @@ func (m Model) tone() tone {
 		added:    pick(lipgloss.Color("#E6FFEC"), lipgloss.Color("#1B3326")),
 		removed:  pick(lipgloss.Color("#FFEBE9"), lipgloss.Color("#3B1D22")),
 		selected: pick(lipgloss.Color("#EDE9FE"), lipgloss.Color("#342A5E")),
+
+		faded:        pick(lipgloss.Color("#A1A1AA"), lipgloss.Color("#71717A")),
+		fadedAdded:   pick(lipgloss.Color("#F4FFF6"), lipgloss.Color("#17231C")),
+		fadedRemoved: pick(lipgloss.Color("#FFF6F5"), lipgloss.Color("#261A1D")),
 	}
 }
 
@@ -283,7 +292,7 @@ func (m Model) hints() (string, string) {
 				}
 			}
 
-			return hint + "c select   ←→ file   esc back", ""
+			return hint + "c select   v viewed   ←→ file   esc back", ""
 
 		case *diffFailed:
 			return "r retry   b browser   esc back", ""

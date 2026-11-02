@@ -22,8 +22,9 @@ type fakeGH struct {
 	calls   []call
 }
 
-// callType is "list" or "threads" for GraphQL calls, "rest" for other API
-// calls, and the gh command, such as "pr", for all other calls.
+// callType is "list", "threads", "files", or "viewed" for GraphQL calls,
+// "rest" for other API calls, and the gh command, such as "pr", for all
+// other calls.
 func callType(args []string) string {
 	if args[0] != "api" {
 		return args[0]
@@ -33,8 +34,17 @@ func callType(args []string) string {
 		return "rest"
 	}
 
-	if strings.Contains(strings.Join(args, " "), "reviewThreads") {
+	joined := strings.Join(args, " ")
+
+	switch {
+	case strings.Contains(joined, "reviewThreads"):
 		return "threads"
+
+	case strings.Contains(joined, "viewerViewedState"):
+		return "files"
+
+	case strings.Contains(joined, "FileAsViewed"):
+		return "viewed"
 	}
 
 	return "list"
@@ -381,8 +391,18 @@ func TestIssueDetailDoesNotLoadCodeComments(t *testing.T) {
 	}
 }
 
+// files is one page of the files of pull request 12.
+func files(nodes string, more bool) string {
+	return fmt.Sprintf(`{"data": {"repository": {"pullRequest": {"id": "PR_12", "headRefOid": "abc123", "files": {
+		"nodes": [%s], "pageInfo": {"hasNextPage": %t, "endCursor": "files-2"}
+	}}}}}`, nodes, more)
+}
+
 func TestDiffReadsEachFileOfThePullRequest(t *testing.T) {
-	gh := &fakeGH{replies: map[string][]string{"pr": {`{"headRefOid": "abc123"}`, `diff --git a/timer.go b/timer.go
+	gh := &fakeGH{replies: map[string][]string{"files": {
+		files(`{"path": "timer.go", "viewerViewedState": "VIEWED"}`, true),
+		files(`{"path": "logo.png", "viewerViewedState": "DISMISSED"}`, false),
+	}, "pr": {`diff --git a/timer.go b/timer.go
 --- a/timer.go
 +++ b/timer.go
 @@ -1 +1 @@
@@ -399,12 +419,45 @@ Binary files a/logo.png and b/logo.png differ
 
 	files := diff.Files
 
-	if diff.Commit != "abc123" || len(files) != 2 || files[0].NewName != "timer.go" || !files[1].IsBinary {
+	if diff.ID != "PR_12" || diff.Commit != "abc123" || len(files) != 2 || files[0].NewName != "timer.go" || !files[1].IsBinary {
 		t.Fatalf("diff = %+v", diff)
 	}
 
-	if args := strings.Join(gh.callsOf("pr")[1].args, " "); !strings.HasPrefix(args, "pr diff 12 -R acme/widgets") {
+	if diff.Viewed["timer.go"] != Viewed || diff.Viewed["logo.png"] != ChangedSinceViewed {
+		t.Fatalf("viewed = %v", diff.Viewed)
+	}
+
+	if after := gh.callsOf("files")[1].value("-f", "after"); after != "files-2" {
+		t.Fatalf("second file page after = %q", after)
+	}
+
+	if args := strings.Join(gh.callsOf("pr")[0].args, " "); !strings.HasPrefix(args, "pr diff 12 -R acme/widgets") {
 		t.Fatalf("gh %s", args)
+	}
+
+	if first, diffCall := gh.calls[0], gh.callsOf("pr")[0]; callType(first.args) != "files" || callType(diffCall.args) != "pr" {
+		t.Fatal("the head commit was not read before the diff")
+	}
+}
+
+func TestSetViewedMarksAndUnmarksTheFile(t *testing.T) {
+	gh := &fakeGH{replies: map[string][]string{"viewed": {"{}", "{}"}}}
+	cli := testCLI(t, "acme/widgets", 30, gh)
+
+	for _, viewed := range []bool{true, false} {
+		if err := cli.SetViewed(context.Background(), "PR_12", "timer.go", viewed); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	calls := gh.callsOf("viewed")
+
+	for i, want := range []string{"markFileAsViewed", "unmarkFileAsViewed"} {
+		query := calls[i].value("-f", "query")
+
+		if !strings.Contains(query, " "+want+"(") || calls[i].value("-f", "id") != "PR_12" || calls[i].value("-f", "path") != "timer.go" {
+			t.Fatalf("call %d: %v", i, calls[i].args)
+		}
 	}
 }
 

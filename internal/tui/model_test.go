@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"strings"
 	"testing"
 	"time"
@@ -35,12 +36,15 @@ type fakeSource struct {
 	browseErr  error
 	diff       string
 	diffErr    error
+	viewed     map[string]github.ViewState
+	viewedErr  error
 
 	listCalls   int
 	detailCalls int
 	diffCalls   int
 
 	codeComments []github.CodeComment
+	viewedCalls  []viewedCall
 	replies      []posted
 	posted       []posted
 	browsed      []int
@@ -85,7 +89,21 @@ func (f *fakeSource) Diff(_ context.Context, _ int) (github.PullDiff, error) {
 
 	files, _, err := gitdiff.Parse(strings.NewReader(f.diff))
 
-	return github.PullDiff{Commit: "head-sha", Files: files}, err
+	viewed := map[string]github.ViewState{}
+	maps.Copy(viewed, f.viewed)
+
+	return github.PullDiff{ID: "PR_4", Commit: "head-sha", Files: files, Viewed: viewed}, err
+}
+
+type viewedCall struct {
+	pull, path string
+	viewed     bool
+}
+
+func (f *fakeSource) SetViewed(_ context.Context, pull, path string, viewed bool) error {
+	f.viewedCalls = append(f.viewedCalls, viewedCall{pull: pull, path: path, viewed: viewed})
+
+	return f.viewedErr
 }
 
 func (f *fakeSource) CommentOnCode(_ context.Context, _ int, comment github.CodeComment) (github.Post, error) {

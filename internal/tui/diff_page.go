@@ -97,7 +97,7 @@ func (m Model) diffContent(loaded *detailLoaded, diff *diffLoaded, width int) (s
 		}
 
 		if diff.selecting && i >= first && i <= last {
-			code = m.diffLine(line.op, line.tokens, page.codeWidth, true)
+			code = m.diffLine(line.op, line.tokens, page.codeWidth, shadeSelected)
 		}
 
 		if i == diff.cursor {
@@ -135,7 +135,8 @@ func (m Model) diffContent(loaded *detailLoaded, diff *diffLoaded, width int) (s
 // pageAt is file i of the diff. It renders the file when it is first needed.
 func (m Model) pageAt(diff *diffLoaded, i int) *filePage {
 	if diff.pages[i] == nil {
-		diff.pages[i] = m.renderFile(diff.diff.Files[i], diff.pagesW)
+		file := diff.diff.Files[i]
+		diff.pages[i] = m.renderFile(file, diff.diff.Viewed[fileName(file)], diff.pagesW)
 	}
 
 	return diff.pages[i]
@@ -281,9 +282,14 @@ func codeThreads(thread []github.Post) map[codeSpot][]int {
 }
 
 // renderFile is the name of a changed file, then each hunk of its diff.
-func (m Model) renderFile(file *gitdiff.File, width int) *filePage {
+func (m Model) renderFile(file *gitdiff.File, state github.ViewState, width int) *filePage {
 	muted := lipgloss.NewStyle().Foreground(m.tone().muted)
-	page := &filePage{path: fileName(file), head: m.fileTitle(file, width), numberWidth: lineNumberWidth(file)}
+	page := &filePage{path: fileName(file), head: m.fileTitle(file, state, width), numberWidth: lineNumberWidth(file)}
+	look := shadeNormal
+
+	if state == github.Viewed {
+		look = shadeFaded
+	}
 
 	if file.IsBinary {
 		page.head += "\n\n" + muted.Render("Binary file. gith cannot show it.")
@@ -340,7 +346,7 @@ func (m Model) renderFile(file *gitdiff.File, width int) *filePage {
 			}
 
 			page.lines = append(page.lines, pageLine{
-				rows:   m.diffLine(line.Op, tokens, page.codeWidth, false),
+				rows:   m.diffLine(line.Op, tokens, page.codeWidth, look),
 				code:   true,
 				hunk:   hunk,
 				spot:   spot,
@@ -385,7 +391,7 @@ func (m Model) codeStyle() *chroma.Style {
 }
 
 // fileTitle is the file name, what happened to the file, and its counts.
-func (m Model) fileTitle(file *gitdiff.File, width int) string {
+func (m Model) fileTitle(file *gitdiff.File, state github.ViewState, width int) string {
 	colors := m.tone()
 	muted := lipgloss.NewStyle().Foreground(colors.muted)
 	var added, deleted int64
@@ -413,13 +419,36 @@ func (m Model) fileTitle(file *gitdiff.File, width int) string {
 		lipgloss.NewStyle().Foreground(colors.bad).Render(fmt.Sprintf("−%d", deleted)),
 	)
 
-	return fitLine(strings.Join(parts, muted.Render("  ·  ")), width)
+	title := strings.Join(parts, muted.Render("  ·  "))
+
+	switch state {
+	case github.Viewed:
+		return spread(title, lipgloss.NewStyle().Foreground(colors.good).Render("✓ Viewed"), width)
+
+	case github.ChangedSinceViewed:
+		return spread(title, lipgloss.NewStyle().Foreground(colors.accent).Render("Changed since viewed"), width)
+	}
+
+	return fitLine(title, width)
 }
+
+// shade is how a line of code is drawn.
+type shade int
+
+const (
+	shadeNormal shade = iota
+
+	// shadeFaded draws the code grey, because the file is viewed.
+	shadeFaded
+
+	// shadeSelected marks the lines that a comment is for.
+	shadeSelected
+)
 
 // diffLine colors one line of code and wraps it onto more screen rows. Each
 // row keeps the + or - mark. A changed or selected line fills the width
 // with its background color.
-func (m Model) diffLine(op gitdiff.LineOp, tokens []chroma.Token, codeWidth int, selected bool) []string {
+func (m Model) diffLine(op gitdiff.LineOp, tokens []chroma.Token, codeWidth int, look shade) []string {
 	colors := m.tone()
 	code := m.codeStyle()
 	var background color.Color
@@ -430,12 +459,20 @@ func (m Model) diffLine(op gitdiff.LineOp, tokens []chroma.Token, codeWidth int,
 		background = colors.added
 		mark = mark.Foreground(colors.good)
 
+		if look == shadeFaded {
+			background = colors.fadedAdded
+		}
+
 	case gitdiff.OpDelete:
 		background = colors.removed
 		mark = mark.Foreground(colors.bad)
+
+		if look == shadeFaded {
+			background = colors.fadedRemoved
+		}
 	}
 
-	if selected {
+	if look == shadeSelected {
 		background = colors.selected
 	}
 
@@ -449,7 +486,11 @@ func (m Model) diffLine(op gitdiff.LineOp, tokens []chroma.Token, codeWidth int,
 	var text strings.Builder
 
 	for _, token := range tokens {
-		text.WriteString(tokenStyle(base, code.Get(token.Type)).Render(token.Value))
+		if look == shadeFaded {
+			text.WriteString(base.Foreground(colors.faded).Render(token.Value))
+		} else {
+			text.WriteString(tokenStyle(base, code.Get(token.Type)).Render(token.Value))
+		}
 	}
 
 	rows := strings.Split(hardwrap(text.String(), codeWidth), "\n")
