@@ -333,66 +333,65 @@ func pullWithCodeComment(t *testing.T) Model {
 	return press(t, press(t, start(t, src), key(tea.KeyRight)), key(tea.KeyEnter))
 }
 
-func TestCodeCommentShowsAPreviewUnderItsLine(t *testing.T) {
+func TestCodeCommentShowsInFullWithItsReplies(t *testing.T) {
 	m := press(t, pullWithCodeComment(t), char('d'))
 	view := screen(m)
-	rows := strings.Split(view, "\n")
 
-	for i, row := range rows {
-		if strings.Contains(row, "+next := 2") {
-			preview := rows[i+1]
-
-			if !strings.Contains(preview, "▸ sam  Use a constant here.") || !strings.Contains(preview, "2 replies") {
-				t.Fatalf("preview = %q\n%s", preview, view)
-			}
+	for _, want := range []string{"▾ sam", "It is clearer.", "ada", "Done in the next commit.", "1 more reply on GitHub"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("comment misses %q:\n%s", want, view)
 		}
 	}
 
-	if strings.Contains(view, "It is clearer.") || strings.Contains(view, "Done in the next commit.") {
-		t.Fatalf("closed comment shows in full:\n%s", view)
+	if !strings.Contains(lineWith(view, "▾ sam"), "│ ▾ sam") || strings.Count(view, "╭") != 2 {
+		t.Fatalf("comment has no frame:\n%s", view)
 	}
 
 	assertFillsScreen(t, m)
 }
 
-func TestEnterOpensAndClosesTheCommentsOfALine(t *testing.T) {
+func TestECollapsesAllCommentsToAPreview(t *testing.T) {
+	m := press(t, press(t, pullWithCodeComment(t), char('d')), char('e'))
+	view := screen(m)
+
+	if preview := lineWith(view, "▸ sam"); !strings.Contains(preview, "▸ sam  Use a constant here.") || !strings.Contains(preview, "2 replies") {
+		t.Fatalf("no preview:\n%s", view)
+	}
+
+	if strings.Contains(view, "It is clearer.") || strings.Contains(view, "Done in the next commit.") {
+		t.Fatalf("collapsed comment shows in full:\n%s", view)
+	}
+
+	assertFillsScreen(t, m)
+
+	if m = press(t, m, char('e')); !strings.Contains(screen(m), "It is clearer.") {
+		t.Fatalf("second e did not open the comments:\n%s", screen(m))
+	}
+}
+
+func TestEnterClosesAndOpensTheCommentsOfALine(t *testing.T) {
 	m := press(t, pullWithCodeComment(t), char('d'))
 
 	if strings.Contains(screen(m), "enter comments") {
 		t.Fatal("hint shows on a line without comments")
 	}
 
-	m = press(t, m, key(tea.KeyEnter))
-
-	if strings.Contains(screen(m), "It is clearer.") {
-		t.Fatal("enter on a line without comments opened a comment")
+	if m = press(t, m, key(tea.KeyEnter)); !strings.Contains(screen(m), "It is clearer.") {
+		t.Fatal("enter on a line without comments closed a comment")
 	}
 
-	m = press(t, m, char('j'))
-	m = press(t, m, char('j'))
+	m = press(t, press(t, m, char('j')), char('j'))
 
 	if !strings.Contains(screen(m), "enter comments") {
 		t.Fatalf("hint missing on a line with comments:\n%s", screen(m))
 	}
 
-	m = press(t, m, key(tea.KeyEnter))
-	view := screen(m)
-
-	for _, want := range []string{"▾ sam", "It is clearer.", "ada", "Done in the next commit.", "1 more reply on GitHub"} {
-		if !strings.Contains(view, want) {
-			t.Fatalf("open comment misses %q:\n%s", want, view)
-		}
-	}
-
-	if !strings.Contains(lineWith(view, "▾ sam"), "│ ▾ sam") || strings.Count(view, "╭") != 2 {
-		t.Fatalf("open comment has no frame:\n%s", view)
-	}
-
-	assertFillsScreen(t, m)
-	m = press(t, m, key(tea.KeyEnter))
-
-	if strings.Contains(screen(m), "It is clearer.") || !strings.Contains(screen(m), "▸ sam") {
+	if m = press(t, m, key(tea.KeyEnter)); strings.Contains(screen(m), "It is clearer.") || !strings.Contains(screen(m), "▸ sam") {
 		t.Fatalf("enter did not close the comment:\n%s", screen(m))
+	}
+
+	if m = press(t, m, key(tea.KeyEnter)); !strings.Contains(screen(m), "It is clearer.") {
+		t.Fatalf("enter did not open the comment:\n%s", screen(m))
 	}
 }
 
@@ -400,7 +399,6 @@ func TestCursorSkipsCommentRows(t *testing.T) {
 	m := press(t, pullWithCodeComment(t), char('d'))
 	m = press(t, m, char('j'))
 	m = press(t, m, char('j'))
-	m = press(t, m, key(tea.KeyEnter))
 	m = press(t, m, char('k'))
 
 	if !strings.Contains(cursorLine(m), "-old := 1") {

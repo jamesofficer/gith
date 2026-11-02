@@ -128,7 +128,7 @@ func (m Model) diffContent(loaded *detailLoaded, diff *diffLoaded, width int) (s
 		}
 
 		if len(here) > 0 {
-			open := diff.expanded[codeSpot{path: page.path, spot: line.spot}]
+			open := diff.threadsOpen(codeSpot{path: page.path, spot: line.spot})
 			rows = append(rows, m.inlineThreads(loaded, diff, here, open, page.numberWidth, width)...)
 		}
 	}

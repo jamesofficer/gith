@@ -36,9 +36,12 @@ type diffLoaded struct {
 	// follow scrolls the view to the cursor at the next sync.
 	follow bool
 
-	// expanded holds the lines whose code comments show in full. threads
-	// holds the markdown of each code comment, rendered at threadsW.
-	expanded map[codeSpot]bool
+	// collapsed shows only the start of each code comment. lineOpen holds
+	// the lines that enter opened or closed against that rule.
+	collapsed bool
+	lineOpen  map[codeSpot]bool
+
+	// threads holds the markdown of each code comment, rendered at threadsW.
 	threads  map[int]renderedPost
 	threadsW int
 }
@@ -55,7 +58,16 @@ type diffMsg struct {
 }
 
 func newDiffLoaded(diff github.PullDiff) *diffLoaded {
-	return &diffLoaded{diff: diff, cursor: -1, expanded: map[codeSpot]bool{}}
+	return &diffLoaded{diff: diff, cursor: -1, lineOpen: map[codeSpot]bool{}}
+}
+
+// threadsOpen tells if the code comments on a line show in full.
+func (d *diffLoaded) threadsOpen(spot codeSpot) bool {
+	if open, ok := d.lineOpen[spot]; ok {
+		return open
+	}
+
+	return !d.collapsed
 }
 
 func (m Model) openDiff(loaded *detailLoaded) (Model, tea.Cmd) {
@@ -183,9 +195,14 @@ func (m Model) onDiffKey(loaded *detailLoaded, key string) (Model, tea.Cmd) {
 
 	case "enter":
 		if spot, ok := diff.cursorSpot(); ok && len(codeThreads(loaded.detail.Thread)[spot]) > 0 {
-			diff.expanded[spot] = !diff.expanded[spot]
+			diff.lineOpen[spot] = !diff.threadsOpen(spot)
 			diff.follow = true
 		}
+
+	case "e":
+		diff.collapsed = !diff.collapsed
+		clear(diff.lineOpen)
+		diff.follow = true
 	}
 
 	return m, nil

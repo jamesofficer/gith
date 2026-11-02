@@ -269,13 +269,21 @@ func (m Model) hints() (string, string) {
 				return "↑↓ jk pick lines   c comment on " + lines + "   esc cancel", ""
 			}
 
-			comments := ""
+			hint := "↑↓ jk line   "
 
-			if spot, ok := diff.cursorSpot(); ok && len(codeThreads(state.detail.Thread)[spot]) > 0 {
-				comments = "enter comments   "
+			if threads := codeThreads(state.detail.Thread); len(threads) > 0 {
+				if spot, ok := diff.cursorSpot(); ok && len(threads[spot]) > 0 {
+					hint += "enter comments   "
+				}
+
+				if diff.collapsed {
+					hint += "e expand   "
+				} else {
+					hint += "e collapse   "
+				}
 			}
 
-			return "↑↓ jk line   " + comments + "c select   ←→ file   b browser   r refresh   esc back", ""
+			return hint + "c select   ←→ file   esc back", ""
 
 		case *diffFailed:
 			return "r retry   b browser   esc back", ""
