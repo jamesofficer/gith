@@ -216,7 +216,7 @@ func (m Model) onKey(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 	m.problem = ""
 	key := msg.String()
 
-	if key == "q" || key == "ctrl+c" {
+	if key == "ctrl+c" || (key == "q" && m.open == nil) {
 		return m, tea.Quit
 	}
 

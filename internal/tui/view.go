@@ -266,7 +266,7 @@ func (m Model) hints() (string, string) {
 				first, last := min(diff.anchor, diff.cursor), max(diff.anchor, diff.cursor)
 				lines := linesName(github.CodeComment{Start: page.lines[first].spot, End: page.lines[last].spot})
 
-				return "↑↓ jk pick lines   c comment on " + lines + "   esc cancel   q quit", ""
+				return "↑↓ jk pick lines   c comment on " + lines + "   esc cancel", ""
 			}
 
 			comments := ""
@@ -275,25 +275,25 @@ func (m Model) hints() (string, string) {
 				comments = "enter comments   "
 			}
 
-			return "↑↓ jk line   " + comments + "c select   ←→ file   b browser   r refresh   esc back   q quit", ""
+			return "↑↓ jk line   " + comments + "c select   ←→ file   b browser   r refresh   esc back", ""
 
 		case *diffFailed:
-			return "r retry   b browser   esc back   q quit", ""
+			return "r retry   b browser   esc back", ""
 
 		case *diffLoading:
-			return "esc back   q quit", ""
+			return "esc back", ""
 		}
 
 		if m.open.key.kind == github.KindPull {
-			return "↑↓ thread   d diff   c comment   b browser   r refresh   esc back   q quit", ""
+			return "↑↓ thread   d diff   c comment   b browser   r refresh   esc back", ""
 		}
 
-		return "↑↓ thread   c comment   b browser   r refresh   esc back   q quit", ""
+		return "↑↓ thread   c comment   b browser   r refresh   esc back", ""
 
 	case *detailFailed:
-		return "r retry   esc back   q quit", ""
+		return "r retry   esc back", ""
 
 	default:
-		return "esc back   q quit", ""
+		return "esc back", ""
 	}
 }

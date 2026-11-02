@@ -411,6 +411,10 @@ func TestQuitKeys(t *testing.T) {
 	if _, cmd := update(t, m, key(tea.KeyEsc)); quits(cmd) {
 		t.Fatal("esc on the list quit the app")
 	}
+
+	if _, cmd := update(t, openCacheIssue(t, newSource()), char('q')); quits(cmd) {
+		t.Fatal("q in an open item quit the app")
+	}
 }
 
 func TestItemLoadedAfterLeavingIsKept(t *testing.T) {
