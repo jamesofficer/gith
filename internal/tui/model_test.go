@@ -3,10 +3,12 @@ package tui
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
+	"charm.land/bubbles/v2/spinner"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -14,19 +16,32 @@ import (
 	"github.com/jamesofficer/gith/internal/github"
 )
 
+var when = time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTC)
+
+type posted struct {
+	number int
+	body   string
+}
+
+// fakeSource answers like gh and records what the model asked for.
 type fakeSource struct {
-	name    string
-	issues  []github.Item
-	pulls   []github.Item
-	detail  github.Detail
-	listErr error
+	issues     []github.Item
+	pulls      []github.Item
+	details    map[int]github.Detail
+	listErr    error
+	detailErr  error
+	commentErr error
+	browseErr  error
+
+	listCalls   int
+	detailCalls int
+	posted      []posted
+	browsed     []int
 }
 
-func (f fakeSource) Name(context.Context) (string, error) {
-	return f.name, nil
-}
+func (f *fakeSource) List(_ context.Context, kind github.Kind) ([]github.Item, error) {
+	f.listCalls++
 
-func (f fakeSource) List(_ context.Context, kind github.Kind) ([]github.Item, error) {
 	if f.listErr != nil {
 		return nil, f.listErr
 	}
@@ -38,273 +53,80 @@ func (f fakeSource) List(_ context.Context, kind github.Kind) ([]github.Item, er
 	return f.issues, nil
 }
 
-func (f fakeSource) Detail(context.Context, github.Kind, int) (github.Detail, error) {
-	return f.detail, nil
-}
+func (f *fakeSource) Detail(_ context.Context, _ github.Kind, number int) (github.Detail, error) {
+	f.detailCalls++
 
-func TestKeysMatch(t *testing.T) {
-	cases := []struct {
-		key  tea.KeyPressMsg
-		want string
-	}{
-		{tea.KeyPressMsg{Code: tea.KeyUp}, "up"},
-		{tea.KeyPressMsg{Code: tea.KeyDown}, "down"},
-		{tea.KeyPressMsg{Code: tea.KeyLeft}, "left"},
-		{tea.KeyPressMsg{Code: tea.KeyRight}, "right"},
-		{tea.KeyPressMsg{Code: tea.KeyEnter}, "enter"},
-		{tea.KeyPressMsg{Code: tea.KeyEsc}, "esc"},
-		{tea.KeyPressMsg{Code: 'q', Text: "q"}, "q"},
+	if f.detailErr != nil {
+		return github.Detail{}, f.detailErr
 	}
 
-	for _, tc := range cases {
-		if got := tc.key.String(); got != tc.want {
-			t.Errorf("%q key string = %q", tc.want, got)
-		}
+	detail, ok := f.details[number]
+
+	if !ok {
+		return github.Detail{}, fmt.Errorf("no item %d", number)
 	}
+
+	return detail, nil
 }
 
-func TestBrowseListAndOpenDetail(t *testing.T) {
-	when := time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTC)
-	src := fakeSource{
-		name: "acme/widgets",
-		issues: []github.Item{
-			{Number: 12, Title: "Fix the timer", Author: "ada", State: "OPEN", UpdatedAt: when},
-			{Number: 9, Title: "Document the cache", Author: "grace", State: "OPEN", UpdatedAt: when},
+func (f *fakeSource) Comment(_ context.Context, number int, body string) (github.Post, error) {
+	f.posted = append(f.posted, posted{number: number, body: body})
+
+	if f.commentErr != nil {
+		return github.Post{}, f.commentErr
+	}
+
+	return github.Post{Author: "ada", Body: body, CreatedAt: when}, nil
+}
+
+func (f *fakeSource) Browse(_ context.Context, number int) error {
+	f.browsed = append(f.browsed, number)
+
+	return f.browseErr
+}
+
+func issue(number int, title string, comments int) github.Item {
+	return github.Item{Number: number, Title: title, Author: "grace", State: "OPEN", UpdatedAt: when, Comments: comments}
+}
+
+// cacheIssue is issue 9 with a description and one comment.
+func cacheIssue() github.Detail {
+	return github.Detail{
+		Item: issue(9, "Document the cache", 1),
+		Body: "Write down how the cache works.",
+		Thread: []github.Post{
+			{Author: "ada", Body: "Please do.", CreatedAt: when},
 		},
+	}
+}
+
+func newSource() *fakeSource {
+	return &fakeSource{
+		issues: []github.Item{issue(12, "Fix the timer", 0), issue(9, "Document the cache", 1)},
 		pulls: []github.Item{
 			{Number: 4, Title: "Add a setting", Author: "ada", State: "OPEN", UpdatedAt: when, Draft: true},
 		},
-		detail: github.Detail{
-			Item: github.Item{
-				Number: 9, Title: "Document the cache", Author: "grace", State: "OPEN", UpdatedAt: when,
-			},
-			Body: "Write down how the cache works.",
-			Comments: []github.Comment{
-				{Author: "ada", Body: "Please do.", CreatedAt: when},
-			},
-		},
-	}
-
-	m := sized(t, New(src))
-	m = apply(t, m, run(t, m.Init()))
-
-	view := m.View().Content
-
-	if !strings.Contains(view, "Fix the timer") || !strings.Contains(view, "acme/widgets") {
-		t.Fatalf("list view missing issue or repo:\n%s", view)
-	}
-
-	if lipgloss.Height(view) != 24 {
-		t.Fatalf("list height = %d", lipgloss.Height(view))
-	}
-
-	if !strings.Contains(lineWith(view, "Fix the timer"), "❯") {
-		t.Fatal("first issue is not selected")
-	}
-
-	m = press(t, m, tea.KeyDown)
-	m = press(t, m, tea.KeyDown)
-
-	if m.issues.cursor != 1 {
-		t.Fatalf("cursor = %d", m.issues.cursor)
-	}
-
-	if strings.Contains(lineWith(m.View().Content, "Fix the timer"), "❯") {
-		t.Fatal("first issue stayed selected")
-	}
-
-	m = press(t, m, tea.KeyRight)
-
-	if m.kind != github.KindPull {
-		t.Fatal("right did not open pull requests")
-	}
-
-	if !strings.Contains(m.View().Content, "Add a setting") {
-		t.Fatal("pull request missing")
-	}
-
-	if !strings.Contains(m.View().Content, "draft") {
-		t.Fatal("draft marker missing")
-	}
-
-	m = press(t, m, tea.KeyLeft)
-
-	if m.kind != github.KindIssue || m.issues.cursor != 1 {
-		t.Fatalf("left lost the issue cursor: kind=%s cursor=%d", m.kind, m.issues.cursor)
-	}
-
-	m = press(t, m, tea.KeyEnter)
-
-	if m.screen != screenDetail {
-		t.Fatal("enter did not open the item")
-	}
-
-	detail := ansi.Strip(m.View().Content)
-
-	if !strings.Contains(detail, "Write down how the cache works.") {
-		t.Fatalf("detail missing body:\n%s", detail)
-	}
-
-	if !strings.Contains(detail, "Please do.") {
-		t.Fatal("detail missing comment")
-	}
-
-	if strings.Count(detail, "╭") != 3 {
-		t.Fatalf("detail frames = %d\n%s", strings.Count(detail, "╭"), detail)
-	}
-
-	if !strings.Contains(detail, "1 of 2") {
-		t.Fatal("thread position missing")
-	}
-
-	m = press(t, m, tea.KeyDown)
-
-	if m.thread != 1 {
-		t.Fatalf("down did not select the comment: %d", m.thread)
-	}
-
-	if !strings.Contains(ansi.Strip(m.View().Content), "2 of 2") {
-		t.Fatal("comment position missing")
-	}
-
-	m = press(t, m, tea.KeyUp)
-
-	if m.thread != 0 {
-		t.Fatalf("up did not return to the description: %d", m.thread)
-	}
-
-	if lipgloss.Width(m.View().Content) != 80 {
-		t.Fatalf("detail width = %d", lipgloss.Width(m.View().Content))
-	}
-
-	if lipgloss.Height(m.View().Content) != 24 {
-		t.Fatalf("detail height = %d", lipgloss.Height(m.View().Content))
-	}
-
-	m = press(t, m, tea.KeyEsc)
-
-	if m.screen != screenList {
-		t.Fatal("esc did not return to the list")
-	}
-
-	_, cmd := m.Update(tea.KeyPressMsg{Code: 'q', Text: "q"})
-
-	if cmd == nil {
-		t.Fatal("q did not quit")
-	}
-
-	if _, ok := cmd().(tea.QuitMsg); !ok {
-		t.Fatal("q did not return quit")
+		details: map[int]github.Detail{9: cacheIssue()},
 	}
 }
 
-func TestEnterOnEmptyListDoesNothing(t *testing.T) {
-	m := sized(t, New(fakeSource{name: "acme/widgets"}))
-	m = apply(t, m, run(t, m.Init()))
-	next := press(t, m, tea.KeyEnter)
-
-	if next.screen != screenList {
-		t.Fatal("enter opened an empty list")
-	}
-}
-
-func TestListErrorIsShown(t *testing.T) {
-	m := sized(t, New(fakeSource{listErr: errors.New("no git remotes found")}))
-	m = apply(t, m, run(t, m.Init()))
-	view := m.View().Content
-
-	if !strings.Contains(view, "Could not load issues.") || !strings.Contains(view, "no git remotes found") {
-		t.Fatalf("error view = %s", view)
-	}
-}
-
-func TestStaleDetailIsIgnored(t *testing.T) {
-	m := sized(t, New(fakeSource{}))
-	m.screen = screenList
-	m.detailReq = 2
-	m = m.applyDetail(detailMsg{
-		req:    1,
-		detail: github.Detail{Item: github.Item{Number: 1, Title: "Old"}, Body: "stale"},
-	})
-
-	if m.detail != nil {
-		t.Fatal("stale detail was applied")
-	}
-}
-
-func TestRowStaysOnOneScreenLine(t *testing.T) {
-	m := New(fakeSource{})
-	item := github.Item{
-		Number:    14874,
-		Title:     strings.Repeat("Very long title ", 20),
-		UpdatedAt: time.Now().Add(-2 * time.Hour),
-		Labels:    []github.Label{{Name: "bug", Color: "ff5451"}, {Name: "enhancement", Color: "0dd8ac"}},
-		Draft:     true,
-		Comments:  9,
-	}
-	line := m.row(item, true, 6, 80)
-
-	if lipgloss.Width(line) != 80 {
-		t.Fatalf("width = %d", lipgloss.Width(line))
-	}
-
-	if strings.Contains(line, "\n") {
-		t.Fatal("row wrapped")
-	}
-
-	if !strings.Contains(line, "…") {
-		t.Fatal("long title was not cut")
-	}
-
-	plain := ansi.Strip(line)
-
-	if !strings.Contains(plain, "💬 9") {
-		t.Fatal("comment chip missing")
-	}
-
-	quiet := item
-	quiet.Comments = 0
-	quietLine := ansi.Strip(m.row(quiet, true, 6, 80))
-
-	if strings.Contains(quietLine, "💬") {
-		t.Fatal("empty comment chip was shown")
-	}
-}
-
-func TestWindowKeepsCursorVisible(t *testing.T) {
-	start, end := window(0, 10, 3)
-
-	if start != 0 || end != 3 {
-		t.Fatalf("top window = %d,%d", start, end)
-	}
-
-	start, end = window(9, 10, 3)
-
-	if start != 7 || end != 10 {
-		t.Fatalf("bottom window = %d,%d", start, end)
-	}
-}
-
-func sized(t *testing.T, m Model) Model {
+// start is the model at 80x24 with both lists loaded.
+func start(t *testing.T, src *fakeSource) Model {
 	t.Helper()
-	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
-	model, ok := next.(Model)
+	m, _ := update(t, New(src, "acme/widgets"), tea.WindowSizeMsg{Width: 80, Height: 24})
 
-	if !ok {
-		t.Fatalf("type %T", next)
-	}
-
-	return model
+	return settle(t, m, m.Init())
 }
 
-func press(t *testing.T, m Model, code rune) Model {
+// openCacheIssue opens issue 9, the second issue in the list.
+func openCacheIssue(t *testing.T, src *fakeSource) Model {
 	t.Helper()
-	msg := tea.KeyPressMsg{Code: code}
 
-	if code == 'q' {
-		msg.Text = "q"
-	}
+	return press(t, press(t, start(t, src), key(tea.KeyDown)), key(tea.KeyEnter))
+}
 
+func update(t *testing.T, m Model, msg tea.Msg) (Model, tea.Cmd) {
+	t.Helper()
 	next, cmd := m.Update(msg)
 	model, ok := next.(Model)
 
@@ -312,16 +134,25 @@ func press(t *testing.T, m Model, code rune) Model {
 		t.Fatalf("type %T", next)
 	}
 
-	if cmd == nil {
-		return model
-	}
-
-	return apply(t, model, []tea.Msg{cmd()})
+	return model, cmd
 }
 
-func run(t *testing.T, cmd tea.Cmd) []tea.Msg {
+// settle runs cmd and gives each message that it makes to the model.
+func settle(t *testing.T, m Model, cmd tea.Cmd) Model {
 	t.Helper()
 
+	for _, msg := range run(cmd) {
+		if _, ok := msg.(tea.QuitMsg); ok {
+			continue
+		}
+
+		m, _ = update(t, m, msg)
+	}
+
+	return m
+}
+
+func run(cmd tea.Cmd) []tea.Msg {
 	if cmd == nil {
 		return nil
 	}
@@ -332,7 +163,7 @@ func run(t *testing.T, cmd tea.Cmd) []tea.Msg {
 		var msgs []tea.Msg
 
 		for _, item := range batch {
-			msgs = append(msgs, run(t, item)...)
+			msgs = append(msgs, run(item)...)
 		}
 
 		return msgs
@@ -341,29 +172,47 @@ func run(t *testing.T, cmd tea.Cmd) []tea.Msg {
 	return []tea.Msg{msg}
 }
 
-func apply(t *testing.T, m Model, msgs []tea.Msg) Model {
+func press(t *testing.T, m Model, msg tea.KeyPressMsg) Model {
+	t.Helper()
+	m, cmd := update(t, m, msg)
+
+	return settle(t, m, cmd)
+}
+
+func typeText(t *testing.T, m Model, text string) Model {
 	t.Helper()
 
-	for _, msg := range msgs {
-		switch msg.(type) {
-		case tea.BatchMsg:
-			m = apply(t, m, run(t, func() tea.Msg { return msg }))
-			continue
-		case tea.QuitMsg:
-			continue
-		}
-
-		next, _ := m.Update(msg)
-		model, ok := next.(Model)
-
-		if !ok {
-			t.Fatalf("type %T", next)
-		}
-
-		m = model
+	for _, r := range text {
+		m = press(t, m, char(r))
 	}
 
 	return m
+}
+
+func key(code rune) tea.KeyPressMsg {
+	return tea.KeyPressMsg{Code: code}
+}
+
+func char(r rune) tea.KeyPressMsg {
+	return tea.KeyPressMsg{Code: r, Text: string(r)}
+}
+
+func ctrl(code rune) tea.KeyPressMsg {
+	return tea.KeyPressMsg{Code: code, Mod: tea.ModCtrl}
+}
+
+func screen(m Model) string {
+	return ansi.Strip(m.View().Content)
+}
+
+func quits(cmd tea.Cmd) bool {
+	for _, msg := range run(cmd) {
+		if _, ok := msg.(tea.QuitMsg); ok {
+			return true
+		}
+	}
+
+	return false
 }
 
 func lineWith(content, text string) string {
@@ -374,4 +223,466 @@ func lineWith(content, text string) string {
 	}
 
 	return ""
+}
+
+// postTop is the top border of the post frame, the second frame on screen.
+func postTop(view string) string {
+	opens := 0
+
+	for _, line := range strings.Split(view, "\n") {
+		if strings.HasPrefix(line, "╭") {
+			opens++
+		}
+
+		if opens == 2 {
+			return line
+		}
+	}
+
+	return ""
+}
+
+func assertFillsScreen(t *testing.T, m Model) {
+	t.Helper()
+	content := m.View().Content
+
+	if lipgloss.Width(content) != m.width || lipgloss.Height(content) != m.height {
+		t.Fatalf("screen = %dx%d, want %dx%d\n%s",
+			lipgloss.Width(content), lipgloss.Height(content), m.width, m.height, ansi.Strip(content))
+	}
+}
+
+func TestListShowsTheRepoAndSelectsTheFirstItem(t *testing.T) {
+	m := start(t, newSource())
+	view := screen(m)
+
+	if !strings.Contains(view, "acme/widgets") || !strings.Contains(view, "Fix the timer") {
+		t.Fatalf("list =\n%s", view)
+	}
+
+	if !strings.Contains(lineWith(view, "Fix the timer"), "❯") {
+		t.Fatal("first issue is not selected")
+	}
+
+	assertFillsScreen(t, m)
+}
+
+func TestEachTabKeepsItsOwnCursor(t *testing.T) {
+	m := start(t, newSource())
+	m = press(t, m, key(tea.KeyDown))
+	m = press(t, m, key(tea.KeyDown))
+
+	if !strings.Contains(lineWith(screen(m), "Document the cache"), "❯") {
+		t.Fatal("down did not select the second issue")
+	}
+
+	m = press(t, m, key(tea.KeyRight))
+	view := screen(m)
+
+	if !strings.Contains(view, "Add a setting") || !strings.Contains(view, "draft") {
+		t.Fatalf("pull request tab =\n%s", view)
+	}
+
+	m = press(t, m, key(tea.KeyLeft))
+
+	if !strings.Contains(lineWith(screen(m), "Document the cache"), "❯") {
+		t.Fatal("the issue cursor was lost")
+	}
+}
+
+func TestOpenItemShowsOnePostAtATime(t *testing.T) {
+	m := openCacheIssue(t, newSource())
+	description := screen(m)
+
+	if !strings.Contains(description, "Write down how the cache works.") || strings.Contains(description, "Please do.") {
+		t.Fatalf("description =\n%s", description)
+	}
+
+	if !strings.HasPrefix(postTop(description), "╭─ 1 of 2 ─") || !strings.Contains(description, "1 comment") {
+		t.Fatalf("thread position or count missing:\n%s", description)
+	}
+
+	assertFillsScreen(t, m)
+	m = press(t, m, key(tea.KeyDown))
+	comment := screen(m)
+
+	if !strings.Contains(comment, "Please do.") || !strings.HasPrefix(postTop(comment), "╭─ 2 of 2 ─") || strings.Contains(comment, "cache works") {
+		t.Fatalf("comment =\n%s", comment)
+	}
+
+	m = press(t, m, key(tea.KeyUp))
+
+	if !strings.Contains(screen(m), "cache works") {
+		t.Fatal("up did not return to the description")
+	}
+
+	m = press(t, m, key(tea.KeyEsc))
+
+	if m.open != nil || !strings.Contains(screen(m), "Fix the timer") {
+		t.Fatal("esc did not return to the list")
+	}
+}
+
+func TestReviewShowsItsVerdict(t *testing.T) {
+	src := newSource()
+	detail := cacheIssue()
+	detail.Thread = []github.Post{{Author: "lin", Review: "APPROVED", CreatedAt: when}}
+	src.details[9] = detail
+	m := press(t, openCacheIssue(t, src), key(tea.KeyDown))
+	header := lineWith(screen(m), "lin")
+
+	if !strings.Contains(header, "approved") {
+		t.Fatalf("review header = %q", header)
+	}
+}
+
+func TestLongPostScrollsInsideItsFrame(t *testing.T) {
+	var body strings.Builder
+
+	for i := 1; i <= 40; i++ {
+		fmt.Fprintf(&body, "marker-%02d\n\n", i)
+	}
+
+	src := newSource()
+	src.details[9] = github.Detail{Item: issue(9, "Document the cache", 0), Body: body.String()}
+	m := openCacheIssue(t, src)
+	top := screen(m)
+
+	if !strings.Contains(top, "marker-01") || strings.Contains(top, "marker-40") {
+		t.Fatal("long post did not stay inside its frame")
+	}
+
+	assertFillsScreen(t, m)
+	m = press(t, m, key(tea.KeyEnd))
+	bottom := screen(m)
+
+	if !strings.Contains(bottom, "marker-40") || strings.Contains(bottom, "marker-01") {
+		t.Fatalf("end did not scroll inside the frame:\n%s", bottom)
+	}
+
+	lines := strings.Split(bottom, "\n")
+
+	if frame := strings.TrimSpace(lines[len(lines)-3]); !strings.HasPrefix(frame, "╰") {
+		t.Fatalf("bottom of the frame is not on screen:\n%s", bottom)
+	}
+}
+
+func TestQuitKeys(t *testing.T) {
+	m := start(t, newSource())
+
+	if _, cmd := update(t, m, char('q')); !quits(cmd) {
+		t.Fatal("q did not quit")
+	}
+
+	if _, cmd := update(t, m, ctrl('c')); !quits(cmd) {
+		t.Fatal("ctrl+c did not quit")
+	}
+
+	if _, cmd := update(t, m, key(tea.KeyEsc)); quits(cmd) {
+		t.Fatal("esc on the list quit the app")
+	}
+}
+
+func TestItemLoadedAfterLeavingIsKept(t *testing.T) {
+	src := newSource()
+	m := press(t, start(t, src), key(tea.KeyDown))
+	m, load := update(t, m, key(tea.KeyEnter))
+	m = press(t, m, key(tea.KeyEsc))
+	m = settle(t, m, load)
+
+	if _, cmd := update(t, m, spinner.TickMsg{}); cmd != nil {
+		t.Fatal("spinner still runs on the list")
+	}
+
+	m = press(t, m, key(tea.KeyEnter))
+
+	if src.detailCalls != 1 || !strings.Contains(screen(m), "cache works") {
+		t.Fatalf("item was loaded %d times:\n%s", src.detailCalls, screen(m))
+	}
+}
+
+func TestDetailErrorCanBeRetried(t *testing.T) {
+	src := newSource()
+	src.detailErr = errors.New("HTTP 502")
+	m := openCacheIssue(t, src)
+
+	if view := screen(m); !strings.Contains(view, "Could not open this item.") || !strings.Contains(view, "HTTP 502") {
+		t.Fatalf("error view =\n%s", view)
+	}
+
+	src.detailErr = nil
+	m = press(t, m, char('r'))
+
+	if !strings.Contains(screen(m), "cache works") {
+		t.Fatalf("retry did not load the item:\n%s", screen(m))
+	}
+}
+
+func TestRefreshLoadsNewData(t *testing.T) {
+	src := newSource()
+	m := start(t, src)
+	src.issues = append(src.issues, issue(30, "A new issue", 0))
+	m = press(t, m, char('r'))
+
+	if !strings.Contains(screen(m), "A new issue") || src.listCalls != 4 {
+		t.Fatalf("refresh made %d list calls:\n%s", src.listCalls, screen(m))
+	}
+
+	m = press(t, m, key(tea.KeyDown))
+	m = press(t, m, key(tea.KeyEnter))
+	detail := cacheIssue()
+	detail.Body = "New text."
+	src.details[9] = detail
+	m = press(t, m, char('r'))
+
+	if !strings.Contains(screen(m), "New text.") || src.detailCalls != 2 {
+		t.Fatalf("item refresh made %d calls:\n%s", src.detailCalls, screen(m))
+	}
+}
+
+func TestOpenInBrowser(t *testing.T) {
+	src := newSource()
+	m := press(t, start(t, src), char('o'))
+	m = press(t, press(t, m, key(tea.KeyDown)), key(tea.KeyEnter))
+	src.browseErr = errors.New("no browser")
+	m = press(t, m, char('o'))
+
+	if fmt.Sprint(src.browsed) != "[12 9]" {
+		t.Fatalf("browsed = %v", src.browsed)
+	}
+
+	if !strings.Contains(screen(m), "Could not open the browser. no browser") {
+		t.Fatalf("browser error missing:\n%s", screen(m))
+	}
+
+	assertFillsScreen(t, m)
+}
+
+func TestCommentBoxTakesAllTypedKeys(t *testing.T) {
+	m := press(t, openCacheIssue(t, newSource()), char('c'))
+
+	if view := screen(m); !strings.Contains(view, "Write a comment") || !strings.Contains(view, "ctrl+s send") {
+		t.Fatalf("comment box missing:\n%s", view)
+	}
+
+	assertFillsScreen(t, m)
+	m = press(t, m, key(tea.KeyLeft))
+	m = typeText(t, m, "Hi")
+	m = press(t, m, key(tea.KeyEnter))
+	m = press(t, m, char('q'))
+	m, cmd := update(t, m, tea.KeyPressMsg{Code: tea.KeyEnter, Mod: tea.ModShift})
+
+	if quits(cmd) || m.open == nil || m.compose().box.Value() != "Hi\nq\n" {
+		t.Fatalf("keys left the comment box: %q\n%s", m.compose().box.Value(), screen(m))
+	}
+}
+
+func TestSendComment(t *testing.T) {
+	for _, send := range []tea.KeyPressMsg{ctrl('s'), ctrl(tea.KeyEnter)} {
+		t.Run(send.String(), func(t *testing.T) {
+			src := newSource()
+			m := press(t, openCacheIssue(t, src), char('c'))
+			m = typeText(t, m, "Ship it.")
+			m = press(t, m, send)
+			view := screen(m)
+
+			if len(src.posted) != 1 || src.posted[0] != (posted{number: 9, body: "Ship it."}) {
+				t.Fatalf("posted = %+v", src.posted)
+			}
+
+			if m.compose() != nil || !strings.Contains(view, "Ship it.") || !strings.HasPrefix(postTop(view), "╭─ 3 of 3 ─") || !strings.Contains(view, "2 comments") {
+				t.Fatalf("sent view =\n%s", view)
+			}
+
+			m = press(t, m, key(tea.KeyEsc))
+
+			if row := screen(m); !strings.Contains(lineWith(row, "Document the cache"), "💬 2") || strings.Contains(lineWith(row, "Fix the timer"), "💬") {
+				t.Fatalf("list counts =\n%s", row)
+			}
+		})
+	}
+}
+
+func TestEmptyCommentIsNotSent(t *testing.T) {
+	src := newSource()
+	m := press(t, openCacheIssue(t, src), char('c'))
+	m = typeText(t, m, "  ")
+	m = press(t, m, ctrl('s'))
+
+	if len(src.posted) != 0 || !strings.Contains(screen(m), "Write a comment first.") {
+		t.Fatalf("posted = %+v\n%s", src.posted, screen(m))
+	}
+
+	assertFillsScreen(t, m)
+}
+
+func TestFailedCommentKeepsItsText(t *testing.T) {
+	src := newSource()
+	src.commentErr = errors.New("no permission")
+	m := press(t, openCacheIssue(t, src), char('c'))
+	m = typeText(t, m, "Ship it.")
+	m = press(t, m, ctrl('s'))
+	view := screen(m)
+
+	if m.compose() == nil || !strings.Contains(view, "Could not send this comment. no permission") || !strings.Contains(view, "Ship it.") {
+		t.Fatalf("error view =\n%s", view)
+	}
+
+	assertFillsScreen(t, m)
+}
+
+func TestClosedCommentBoxKeepsTheDraft(t *testing.T) {
+	m := press(t, openCacheIssue(t, newSource()), char('c'))
+	m = typeText(t, m, "Half done")
+	m = press(t, m, key(tea.KeyEsc))
+
+	if m.compose() != nil || strings.Contains(screen(m), "Half done") {
+		t.Fatal("esc did not close the comment box")
+	}
+
+	m = press(t, m, char('c'))
+
+	if m.compose().box.Value() != "Half done" {
+		t.Fatalf("draft = %q", m.compose().box.Value())
+	}
+}
+
+func TestCommentKeyOnListDoesNothing(t *testing.T) {
+	m := press(t, start(t, newSource()), char('c'))
+
+	if m.open != nil {
+		t.Fatal("c opened an item from the list")
+	}
+}
+
+func TestEnterOnEmptyListDoesNothing(t *testing.T) {
+	m := press(t, start(t, &fakeSource{}), key(tea.KeyEnter))
+
+	if m.open != nil || !strings.Contains(screen(m), "No open issues.") {
+		t.Fatalf("empty list =\n%s", screen(m))
+	}
+}
+
+func TestListErrorIsShown(t *testing.T) {
+	m := start(t, &fakeSource{listErr: errors.New("HTTP 401")})
+
+	if view := screen(m); !strings.Contains(view, "Could not load issues.") || !strings.Contains(view, "HTTP 401") {
+		t.Fatalf("error view =\n%s", view)
+	}
+}
+
+func TestTinyTerminalDoesNotBreak(t *testing.T) {
+	m := openCacheIssue(t, newSource())
+	m, _ = update(t, m, tea.WindowSizeMsg{Width: 12, Height: 5})
+	m = press(t, m, char('c'))
+	m = typeText(t, m, "Hi")
+	m = press(t, m, key(tea.KeyDown))
+
+	if screen(m) == "" {
+		t.Fatal("nothing was drawn")
+	}
+}
+
+func TestRowStaysOnOneScreenLine(t *testing.T) {
+	m := New(&fakeSource{}, "acme/widgets")
+	item := github.Item{
+		Number:    14874,
+		Title:     strings.Repeat("Very long title ", 20),
+		UpdatedAt: when,
+		Labels:    []github.Label{{Name: "bug", Color: "ff5451"}, {Name: "enhancement", Color: "0dd8ac"}},
+		Draft:     true,
+		Comments:  9,
+	}
+	line := m.row(item, true, 6, 80, when.Add(2*time.Hour))
+	plain := ansi.Strip(line)
+
+	if lipgloss.Width(line) != 80 || strings.Contains(line, "\n") {
+		t.Fatalf("row = %q", plain)
+	}
+
+	if !strings.Contains(plain, "…") || !strings.Contains(plain, "💬 9") || !strings.Contains(plain, "2h") {
+		t.Fatalf("row = %q", plain)
+	}
+}
+
+func TestArrowsInItemDoNotSwitchTab(t *testing.T) {
+	m := openCacheIssue(t, newSource())
+	m = press(t, m, key(tea.KeyRight))
+	m = press(t, m, key(tea.KeyLeft))
+
+	if m.open == nil || m.kind != github.KindIssue || !strings.Contains(screen(m), "cache works") {
+		t.Fatalf("arrows left the item:\n%s", screen(m))
+	}
+}
+
+func TestCodeCommentShowsItsPlaceAndIndentedReplies(t *testing.T) {
+	src := newSource()
+	detail := cacheIssue()
+	detail.Thread = []github.Post{{
+		Author:    "sam",
+		Body:      "Use a constant.",
+		CreatedAt: when,
+		Code: &github.CodeThread{
+			Path:        "internal/timer.go",
+			Line:        85,
+			Hunk:        "@@ -80,6 +80,6 @@\n context\n-old := 1\n+next := 2",
+			Resolved:    true,
+			Replies:     []github.Reply{{Author: "ada", Body: "Done.", CreatedAt: when}},
+			MoreReplies: 2,
+		},
+	}}
+	src.details[9] = detail
+	m := press(t, openCacheIssue(t, src), key(tea.KeyDown))
+	view := screen(m)
+
+	if !strings.Contains(lineWith(view, "internal/timer.go:85"), "resolved") {
+		t.Fatalf("place of the comment missing:\n%s", view)
+	}
+
+	if !strings.Contains(view, "+next := 2") || strings.Contains(view, "@@") {
+		t.Fatalf("diff missing:\n%s", view)
+	}
+
+	comment, reply := lineWith(view, "Use a constant."), lineWith(view, "Done.")
+
+	if indentOf(reply) <= indentOf(comment) || !strings.Contains(reply, "│") {
+		t.Fatalf("reply is not indented under the comment:\n%s", view)
+	}
+
+	assertFillsScreen(t, m)
+	m = press(t, m, key(tea.KeyEnd))
+
+	if !strings.Contains(screen(m), "2 more replies on GitHub") {
+		t.Fatalf("note about hidden replies missing:\n%s", screen(m))
+	}
+}
+
+// indentOf is the column where the text of a post line starts, inside the frame.
+func indentOf(line string) int {
+	inner := strings.TrimPrefix(strings.TrimSpace(line), "│")
+
+	return len(inner) - len(strings.TrimLeft(inner, " │"))
+}
+
+func TestAssigneesAreShown(t *testing.T) {
+	src := newSource()
+	src.issues[0].Assignees = []string{"lin", "sam"}
+	detail := cacheIssue()
+	detail.Assignees = []string{"lin"}
+	src.details[9] = detail
+	m := start(t, src)
+
+	if row := lineWith(screen(m), "Fix the timer"); !strings.Contains(row, "@lin +1") {
+		t.Fatalf("row = %q", row)
+	}
+
+	if row := lineWith(screen(m), "Document the cache"); strings.Contains(row, "@") {
+		t.Fatalf("row without assignees = %q", row)
+	}
+
+	m = press(t, press(t, m, key(tea.KeyDown)), key(tea.KeyEnter))
+
+	if !strings.Contains(screen(m), "assigned to @lin") {
+		t.Fatalf("header missing assignee:\n%s", screen(m))
+	}
 }

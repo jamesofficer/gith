@@ -3,8 +3,6 @@ package tui
 
 import (
 	"context"
-	"fmt"
-	"strings"
 	"time"
 
 	"charm.land/bubbles/v2/spinner"
@@ -15,12 +13,7 @@ import (
 	"github.com/jamesofficer/gith/internal/github"
 )
 
-type screen int
-
-const (
-	screenList screen = iota
-	screenDetail
-)
+const requestTimeout = 30 * time.Second
 
 type list struct {
 	items   []github.Item
@@ -29,39 +22,61 @@ type list struct {
 	err     error
 }
 
+type itemKey struct {
+	kind   github.Kind
+	number int
+}
+
+// openItem is the issue or pull request on the detail screen.
+type openItem struct {
+	key     itemKey
+	summary github.Item
+	req     int
+	state   detailState
+}
+
+// detailState is *detailLoading, *detailFailed, or *detailLoaded.
+type detailState interface{ isDetailState() }
+
+type detailLoading struct{}
+
+type detailFailed struct{ err error }
+
+type detailLoaded struct {
+	detail github.Detail
+
+	// posts holds the rendered description, then each post of the thread.
+	posts     []renderedPost
+	postsW    int
+	postsDark bool
+	index     int
+	compose   *compose
+}
+
+func (*detailLoading) isDetailState() {}
+func (*detailFailed) isDetailState()  {}
+func (*detailLoaded) isDetailState()  {}
+
 // Model is the Bubble Tea model for gith.
 type Model struct {
-	source github.Source
-	name   string
-	width  int
-	height int
-	dark   bool
+	source   github.Source
+	repo     string
+	width    int
+	height   int
+	dark     bool
+	spin     spinner.Model
+	viewport viewport.Model
+
 	kind   github.Kind
 	issues list
 	pulls  list
-	screen screen
 
-	opened        github.Item
-	detail        *github.Detail
-	detailLoading bool
-	detailErr     error
-	detailReq     int
-	cache         map[string]github.Detail
-
-	spin     spinner.Model
-	viewport viewport.Model
-	posts    []string
-	postTop  []int
-	postHigh []int
-	thread   int
-	renderW  int
-	renderD  bool
-	renderR  int
-}
-
-type nameMsg struct {
-	name string
-	err  error
+	// open is nil on the list screen.
+	open    *openItem
+	problem string
+	cache   map[itemKey]github.Detail
+	drafts  map[itemKey]string
+	req     int
 }
 
 type listMsg struct {
@@ -72,19 +87,31 @@ type listMsg struct {
 
 type detailMsg struct {
 	req    int
+	key    itemKey
 	detail github.Detail
 	err    error
 }
 
-// New starts on the open issue list and loads both lists.
-func New(source github.Source) Model {
+type commentMsg struct {
+	req  int
+	key  itemKey
+	post github.Post
+	err  error
+}
+
+type browseMsg struct{ err error }
+
+// New starts on the issue list of the named repository.
+func New(source github.Source, repo string) Model {
 	m := Model{
 		source:   source,
+		repo:     repo,
 		dark:     true,
 		kind:     github.KindIssue,
 		issues:   list{loading: true},
 		pulls:    list{loading: true},
-		cache:    map[string]github.Detail{},
+		cache:    map[itemKey]github.Detail{},
+		drafts:   map[itemKey]string{},
 		spin:     spinner.New(spinner.WithSpinner(spinner.MiniDot)),
 		viewport: viewport.New(),
 	}
@@ -95,41 +122,34 @@ func New(source github.Source) Model {
 	return m
 }
 
-// Init loads the repository name and both lists.
+// Init loads both lists.
 func (m Model) Init() tea.Cmd {
 	return tea.Batch(
 		tea.RequestBackgroundColor,
 		m.spin.Tick,
-		m.loadName(),
 		m.loadList(github.KindIssue),
 		m.loadList(github.KindPull),
 	)
 }
 
-// Update handles keys, window size, and loaded data.
+// Update handles a message, then fits the open item to the screen.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	m, cmd := m.update(msg)
+
+	return m.sync(), cmd
+}
+
+func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
 
-		if m.screen == screenDetail && m.detail != nil {
-			m = m.prepareDetail(false)
-		}
-
 		return m, nil
 
 	case tea.BackgroundColorMsg:
-		if msg.IsDark() == m.dark {
-			return m, nil
-		}
-
 		m.dark = msg.IsDark()
 		m.spin.Style = lipgloss.NewStyle().Foreground(m.tone().accent)
-
-		if m.screen == screenDetail && m.detail != nil {
-			m = m.prepareDetail(false)
-		}
 
 		return m, nil
 
@@ -137,15 +157,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.onKey(msg)
 
 	case tea.MouseWheelMsg:
-		if m.screen == screenDetail && m.detail != nil {
+		if m.loaded() != nil {
 			m.viewport, _ = m.viewport.Update(msg)
-		}
-
-		return m, nil
-
-	case nameMsg:
-		if msg.err == nil {
-			m.name = msg.name
 		}
 
 		return m, nil
@@ -155,6 +168,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case detailMsg:
 		return m.applyDetail(msg), nil
+
+	case commentMsg:
+		return m.applyComment(msg)
+
+	case browseMsg:
+		if msg.err != nil {
+			m.problem = "Could not open the browser. " + msg.err.Error()
+		}
+
+		return m, nil
 
 	case spinner.TickMsg:
 		if !m.busy() {
@@ -167,324 +190,332 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 
+	if c := m.compose(); c != nil && !c.sending {
+		var cmd tea.Cmd
+		c.box, cmd = c.box.Update(msg)
+
+		return m, cmd
+	}
+
 	return m, nil
 }
 
-func (m Model) onKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "q", "ctrl+c":
+func (m Model) onKey(msg tea.KeyPressMsg) (Model, tea.Cmd) {
+	if c := m.compose(); c != nil {
+		return m.onComposeKey(c, msg)
+	}
+
+	m.problem = ""
+	key := msg.String()
+
+	if key == "q" || key == "ctrl+c" {
 		return m, tea.Quit
+	}
 
-	case "esc":
-		if m.screen == screenDetail {
-			m.screen = screenList
+	if m.open != nil {
+		return m.onDetailKey(key)
+	}
 
-			return m, nil
-		}
+	return m.onListKey(key)
+}
 
-		return m, tea.Quit
+func (m Model) onListKey(key string) (Model, tea.Cmd) {
+	active := m.listOf(m.kind)
 
-	case "left", "right":
-		if m.screen == screenDetail {
-			m.screen = screenList
-		}
-
-		m.kind = other(m.kind)
-
-		return m, nil
-
+	switch key {
 	case "up":
-		return m.move(-1)
+		active.cursor = step(active.cursor, -1, len(active.items))
 
 	case "down":
-		return m.move(1)
+		active.cursor = step(active.cursor, 1, len(active.items))
 
-	case "pgup":
-		if m.screen == screenDetail {
-			m.viewport.PageUp()
-		}
-
-		return m, nil
-
-	case "pgdown":
-		if m.screen == screenDetail {
-			m.viewport.PageDown()
-		}
-
-		return m, nil
-
-	case "home":
-		if m.screen == screenDetail {
-			m.viewport.GotoTop()
-		}
-
-		return m, nil
-
-	case "end":
-		if m.screen == screenDetail {
-			m.viewport.GotoBottom()
-		}
-
-		return m, nil
+	case "left", "right":
+		m.kind = other(m.kind)
 
 	case "enter":
-		if m.screen == screenList {
-			return m.open()
+		return m.openSelected()
+
+	case "o":
+		if item, ok := active.current(); ok {
+			return m, m.browse(item.Number)
 		}
 
-		return m, nil
-
-	case "backspace":
-		if m.screen == screenDetail {
-			m.screen = screenList
-		}
-
-		return m, nil
+	case "r":
+		return m.refreshLists()
 	}
 
 	return m, nil
 }
 
-func (m Model) move(delta int) (tea.Model, tea.Cmd) {
-	if m.screen == screenDetail {
-		if len(m.posts) == 0 {
-			return m, nil
-		}
+func (m Model) onDetailKey(key string) (Model, tea.Cmd) {
+	switch key {
+	case "esc", "backspace":
+		m.open = nil
 
-		next := step(m.thread, delta, len(m.posts))
+	case "o":
+		return m, m.browse(m.open.key.number)
 
-		if next == m.thread {
-			return m, nil
-		}
+	case "r":
+		return m.reloadDetail()
 
-		m.thread = next
+	case "c":
+		return m.startCompose()
 
-		return m.paintThread(false), nil
+	case "up":
+		return m.moveThread(-1), nil
+
+	case "down":
+		return m.moveThread(1), nil
+
+	case "pgup":
+		m.viewport.PageUp()
+
+	case "pgdown":
+		m.viewport.PageDown()
+
+	case "home":
+		m.viewport.GotoTop()
+
+	case "end":
+		m.viewport.GotoBottom()
 	}
 
-	active := m.active()
-	active.cursor = step(active.cursor, delta, len(active.items))
-
-	return m.setActive(active), nil
+	return m, nil
 }
 
-func (m Model) open() (tea.Model, tea.Cmd) {
-	item, ok := m.active().current()
+func (m Model) moveThread(delta int) Model {
+	loaded := m.loaded()
+
+	if loaded == nil {
+		return m
+	}
+
+	next := step(loaded.index, delta, len(loaded.posts))
+
+	if next != loaded.index {
+		loaded.index = next
+		m.viewport.SetYOffset(0)
+	}
+
+	return m
+}
+
+func (m Model) openSelected() (Model, tea.Cmd) {
+	item, ok := m.listOf(m.kind).current()
 
 	if !ok {
 		return m, nil
 	}
 
-	m.screen = screenDetail
-	m.opened = item
-	m.detail = nil
-	m.detailErr = nil
-	m.posts = nil
-	m.thread = 0
-	m.detailReq++
-	req := m.detailReq
-	key := cacheKey(m.kind, item.Number)
+	key := itemKey{kind: m.kind, number: item.Number}
+	m.req++
+	m.open = &openItem{key: key, summary: item, req: m.req}
+	m.viewport.SetYOffset(0)
 
 	if cached, ok := m.cache[key]; ok {
-		m.detail = &cached
-		m.detailLoading = false
-		m = m.prepareDetail(true)
+		m.open.state = &detailLoaded{detail: cached}
 
 		return m, nil
 	}
 
-	m.detailLoading = true
-	kind := m.kind
-	number := item.Number
+	return m.loadDetail()
+}
 
-	return m, tea.Batch(m.spin.Tick, func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
+func (m Model) reloadDetail() (Model, tea.Cmd) {
+	if _, loading := m.open.state.(*detailLoading); loading {
+		return m, nil
+	}
 
-		detail, err := m.source.Detail(ctx, kind, number)
+	delete(m.cache, m.open.key)
+	m.req++
+	m.open.req = m.req
+	m.viewport.SetYOffset(0)
 
-		return detailMsg{req: req, detail: detail, err: err}
+	return m.loadDetail()
+}
+
+func (m Model) loadDetail() (Model, tea.Cmd) {
+	m.open.state = &detailLoading{}
+	source, key, req := m.source, m.open.key, m.open.req
+
+	return m, tea.Batch(m.spin.Tick, request(func(ctx context.Context) tea.Msg {
+		detail, err := source.Detail(ctx, key.kind, key.number)
+
+		return detailMsg{req: req, key: key, detail: detail, err: err}
+	}))
+}
+
+// applyDetail caches a loaded item even when the user has left it.
+func (m Model) applyDetail(msg detailMsg) Model {
+	if msg.err == nil {
+		m.cache[msg.key] = msg.detail
+		m = m.setCommentCount(msg.key, msg.detail.Comments)
+	}
+
+	if m.open == nil || m.open.req != msg.req {
+		return m
+	}
+
+	if msg.err != nil {
+		m.open.state = &detailFailed{err: msg.err}
+
+		return m
+	}
+
+	m.open.state = &detailLoaded{detail: msg.detail}
+
+	return m
+}
+
+func (m Model) refreshLists() (Model, tea.Cmd) {
+	if m.issues.loading || m.pulls.loading {
+		return m, nil
+	}
+
+	m.issues.loading = true
+	m.pulls.loading = true
+	clear(m.cache)
+
+	return m, tea.Batch(m.spin.Tick, m.loadList(github.KindIssue), m.loadList(github.KindPull))
+}
+
+func (m Model) loadList(kind github.Kind) tea.Cmd {
+	source := m.source
+
+	return request(func(ctx context.Context) tea.Msg {
+		items, err := source.List(ctx, kind)
+
+		return listMsg{kind: kind, items: items, err: err}
 	})
 }
 
 func (m Model) applyList(msg listMsg) Model {
-	active := m.issues
-
-	if msg.kind == github.KindPull {
-		active = m.pulls
-	}
-
-	active.loading = false
-	active.err = msg.err
-	active.items = msg.items
-	active.cursor = clamp(active.cursor, len(active.items))
-
-	if msg.kind == github.KindPull {
-		m.pulls = active
-
-		return m
-	}
-
-	m.issues = active
+	l := m.listOf(msg.kind)
+	l.loading = false
+	l.err = msg.err
+	l.items = msg.items
+	l.cursor = step(l.cursor, 0, len(l.items))
 
 	return m
 }
 
-func (m Model) applyDetail(msg detailMsg) Model {
-	if msg.req != m.detailReq || m.screen != screenDetail {
-		return m
-	}
+func (m Model) setCommentCount(key itemKey, count int) Model {
+	l := m.listOf(key.kind)
 
-	m.detailLoading = false
-
-	if msg.err != nil {
-		m.detailErr = msg.err
-		m.detail = nil
-		m.posts = nil
-
-		return m
-	}
-
-	m.detailErr = nil
-	m.cache[cacheKey(m.kind, msg.detail.Number)] = msg.detail
-	detail := msg.detail
-	m.detail = &detail
-
-	return m.prepareDetail(true)
-}
-
-func (m Model) prepareDetail(reset bool) Model {
-	if m.width <= 0 || m.height <= 0 || m.detail == nil {
-		return m
-	}
-
-	contentW := m.detailContentWidth()
-	m.viewport.SetWidth(m.width)
-	m.viewport.SetHeight(m.threadViewportHeight())
-
-	if m.posts == nil || m.renderW != contentW || m.renderD != m.dark || m.renderR != m.detailReq {
-		m.posts = renderPosts(*m.detail, contentW, m.dark)
-		m.renderW = contentW
-		m.renderD = m.dark
-		m.renderR = m.detailReq
-	}
-
-	if reset {
-		m.thread = 0
-	}
-
-	return m.paintThread(reset)
-}
-
-func (m Model) paintThread(reset bool) Model {
-	if len(m.posts) == 0 {
-		m.viewport.SetContent("")
-
-		return m
-	}
-
-	m.thread = step(m.thread, 0, len(m.posts))
-	blocks := make([]string, len(m.posts))
-	m.postTop = make([]int, len(m.posts))
-	m.postHigh = make([]int, len(m.posts))
-	line := 0
-
-	for i := range m.posts {
-		m.postTop[i] = line
-		blocks[i] = m.postBox(m.postContent(i), i == m.thread)
-		m.postHigh[i] = lipgloss.Height(blocks[i])
-		line += m.postHigh[i]
-
-		if i < len(m.posts)-1 {
-			line++
+	for i := range l.items {
+		if l.items[i].Number == key.number {
+			l.items[i].Comments = count
 		}
 	}
 
-	m.viewport.SetContent(strings.Join(blocks, "\n\n"))
-
-	if reset {
-		m.viewport.GotoTop()
-
-		return m
+	if m.open != nil && m.open.key == key {
+		m.open.summary.Comments = count
 	}
 
-	return m.revealThread()
+	return m
 }
 
-func (m Model) revealThread() Model {
-	if m.thread < 0 || m.thread >= len(m.postTop) {
+func (m Model) browse(number int) tea.Cmd {
+	source := m.source
+
+	return request(func(ctx context.Context) tea.Msg {
+		return browseMsg{err: source.Browse(ctx, number)}
+	})
+}
+
+func request(fn func(ctx context.Context) tea.Msg) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+		defer cancel()
+
+		return fn(ctx)
+	}
+}
+
+// sync renders the open item for the screen size and colors, then sizes the
+// post viewport and the comment box to the layout.
+func (m Model) sync() Model {
+	loaded := m.loaded()
+
+	if loaded == nil || m.width <= 0 || m.height <= 0 {
 		return m
 	}
 
-	top := m.postTop[m.thread]
-	height := m.postHigh[m.thread]
-	bottom := top + height
-	viewH := m.viewport.Height()
-	y := m.viewport.YOffset()
+	width := m.contentWidth()
 
-	if top < y {
-		m.viewport.SetYOffset(top)
+	if loaded.posts == nil || loaded.postsW != width || loaded.postsDark != m.dark {
+		posts, err := renderPosts(loaded.detail, width, m.dark)
 
-		return m
-	}
-
-	if bottom > y+viewH {
-		if height >= viewH {
-			m.viewport.SetYOffset(top)
+		if err != nil {
+			m.open.state = &detailFailed{err: err}
 
 			return m
 		}
 
-		m.viewport.SetYOffset(bottom - viewH)
+		loaded.posts, loaded.postsW, loaded.postsDark = posts, width, m.dark
+		loaded.index = step(loaded.index, 0, len(posts))
 	}
+
+	layout := m.detailLayout()
+	content := m.postContent(loaded)
+
+	if c := loaded.compose; c != nil {
+		c.box.SetStyles(m.commentStyles())
+		c.box.SetWidth(width)
+		c.box.SetHeight(layout.composeRows)
+	}
+
+	m.viewport.SetWidth(width)
+	m.viewport.SetHeight(min(lipgloss.Height(content), layout.postHeight-m.frameHeight()))
+	m.viewport.SetContent(content)
 
 	return m
-}
-
-func (m Model) loadName() tea.Cmd {
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-
-		name, err := m.source.Name(ctx)
-
-		return nameMsg{name: name, err: err}
-	}
-}
-
-func (m Model) loadList(kind github.Kind) tea.Cmd {
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-
-		items, err := m.source.List(ctx, kind)
-
-		return listMsg{kind: kind, items: items, err: err}
-	}
 }
 
 func (m Model) busy() bool {
-	return m.issues.loading || m.pulls.loading || m.detailLoading
-}
-
-func (m Model) active() list {
-	if m.kind == github.KindPull {
-		return m.pulls
+	if m.issues.loading || m.pulls.loading {
+		return true
 	}
 
-	return m.issues
-}
-
-func (m Model) setActive(active list) Model {
-	if m.kind == github.KindPull {
-		m.pulls = active
-
-		return m
+	if m.open == nil {
+		return false
 	}
 
-	m.issues = active
+	switch state := m.open.state.(type) {
+	case *detailLoading:
+		return true
 
-	return m
+	case *detailLoaded:
+		return state.compose != nil && state.compose.sending
+	}
+
+	return false
+}
+
+func (m Model) loaded() *detailLoaded {
+	if m.open == nil {
+		return nil
+	}
+
+	loaded, _ := m.open.state.(*detailLoaded)
+
+	return loaded
+}
+
+func (m Model) compose() *compose {
+	if loaded := m.loaded(); loaded != nil {
+		return loaded.compose
+	}
+
+	return nil
+}
+
+func (m *Model) listOf(kind github.Kind) *list {
+	if kind == github.KindPull {
+		return &m.pulls
+	}
+
+	return &m.issues
 }
 
 func (l list) current() (github.Item, bool) {
@@ -495,67 +526,10 @@ func (l list) current() (github.Item, bool) {
 	return l.items[l.cursor], true
 }
 
-func (m Model) shown() github.Item {
-	if m.detail != nil {
-		return m.detail.Item
-	}
-
-	return m.opened
-}
-
 func other(kind github.Kind) github.Kind {
 	if kind == github.KindPull {
 		return github.KindIssue
 	}
 
 	return github.KindPull
-}
-
-func cacheKey(kind github.Kind, number int) string {
-	return fmt.Sprintf("%s/%d", kind, number)
-}
-
-func step(cursor, delta, n int) int {
-	if n == 0 {
-		return 0
-	}
-
-	next := cursor + delta
-
-	if next < 0 {
-		return 0
-	}
-
-	if next >= n {
-		return n - 1
-	}
-
-	return next
-}
-
-func clamp(cursor, n int) int {
-	return step(cursor, 0, n)
-}
-
-// window is the visible slice that keeps the cursor on screen.
-func window(cursor, count, height int) (int, int) {
-	if height < 1 {
-		height = 1
-	}
-
-	if count <= height {
-		return 0, count
-	}
-
-	start := cursor - height/2
-
-	if start < 0 {
-		start = 0
-	}
-
-	if start+height > count {
-		start = count - height
-	}
-
-	return start, start + height
 }

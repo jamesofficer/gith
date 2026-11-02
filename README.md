@@ -1,6 +1,6 @@
 # gith
 
-Browse open GitHub issues and pull requests in the terminal.
+Browse open GitHub issues and pull requests in the terminal. See who is assigned to each one. Read the thread, write comments, and open items in your browser.
 
 `gith` uses the repository in the current directory. It loads data with the [GitHub CLI](https://cli.github.com/).
 
@@ -26,10 +26,11 @@ Open the repository you want to browse, then run:
 gith
 ```
 
-Browse a different repository:
+Browse a different repository. For GitHub Enterprise, put the host first:
 
 ```bash
 gith -R owner/name
+gith -R github.example.com/owner/name
 ```
 
 Load more than 30 open items:
@@ -42,10 +43,16 @@ gith -L 50
 
 | Key | Action |
 | --- | --- |
-| `←` `→` | Switch between issues and pull requests |
-| `↑` `↓` | Move in the list, or move between the description and the comments |
+| `←` `→` | Switch between issues and pull requests in the list |
+| `↑` `↓` | Move in the list, or move through the thread of the open item |
 | `enter` | Open the selected item |
-| `esc` | Return to the list |
+| `o` | Open the selected item in your browser |
+| `r` | Load the lists or the open item again |
+| `c` | Write a comment on the open item |
+| `ctrl+s` | Send the comment (`ctrl+enter` also works in terminals that support it) |
+| `esc` | Close the comment box, or return to the list |
 | `q` | Quit |
 
-In an open item, `page up`, `page down`, `home`, and `end` scroll the thread.
+In an open item, one post fills the screen. The thread holds the description, the comments, the reviews, and the comments on lines of code, oldest first. A comment on code shows its file, its line, and the diff above it. Its replies go under it with an indent. The top of the post frame shows the place in the thread, such as `4 of 7`. `page up`, `page down`, `home`, and `end` scroll inside that post.
+
+In the comment box, `enter` and `shift+enter` start a new line. `esc` closes the box and keeps your text until you send it.

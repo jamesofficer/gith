@@ -1,0 +1,123 @@
+package tui
+
+import (
+	"strings"
+
+	"charm.land/glamour/v2"
+	gansi "charm.land/glamour/v2/ansi"
+	"charm.land/glamour/v2/styles"
+
+	"github.com/jamesofficer/gith/internal/github"
+)
+
+// renderedPost is the markdown of one post, rendered for the terminal.
+type renderedPost struct {
+	body string
+
+	// replies holds the replies to a code comment, rendered narrower to fit
+	// the indent.
+	replies []string
+}
+
+// renderPosts renders the description, then each post of the thread.
+func renderPosts(detail github.Detail, width int, dark bool) ([]renderedPost, error) {
+	post, err := markdownRenderer(width, dark)
+
+	if err != nil {
+		return nil, err
+	}
+
+	reply, err := markdownRenderer(max(1, width-replyIndent), dark)
+
+	if err != nil {
+		return nil, err
+	}
+
+	description, err := render(post, detail.Body, "_No description._")
+
+	if err != nil {
+		return nil, err
+	}
+
+	posts := []renderedPost{{body: description}}
+
+	for _, p := range detail.Thread {
+		body, err := render(post, p.Body, "_No comment._")
+
+		if err != nil {
+			return nil, err
+		}
+
+		rendered := renderedPost{body: body}
+
+		if p.Code != nil {
+			for _, r := range p.Code.Replies {
+				text, err := render(reply, r.Body, "_No comment._")
+
+				if err != nil {
+					return nil, err
+				}
+
+				rendered.replies = append(rendered.replies, text)
+			}
+		}
+
+		posts = append(posts, rendered)
+	}
+
+	return posts, nil
+}
+
+func markdownRenderer(width int, dark bool) (*glamour.TermRenderer, error) {
+	return glamour.NewTermRenderer(
+		glamour.WithStyles(markdownStyle(dark, width)),
+		glamour.WithWordWrap(width),
+	)
+}
+
+func render(renderer *glamour.TermRenderer, text, empty string) (string, error) {
+	out, err := renderer.Render(orElse(text, empty))
+
+	if err != nil {
+		return "", err
+	}
+
+	return strings.TrimSpace(out), nil
+}
+
+func orElse(text, fallback string) string {
+	if strings.TrimSpace(text) == "" {
+		return fallback
+	}
+
+	return text
+}
+
+func markdownStyle(dark bool, width int) gansi.StyleConfig {
+	cfg := styles.LightStyleConfig
+
+	if dark {
+		cfg = styles.TokyoNightStyleConfig
+	}
+
+	margin := uint(0)
+	cfg.Document.Margin = &margin
+	cfg.CodeBlock.Margin = &margin
+	cfg.HorizontalRule.Format = "\n" + strings.Repeat("─", width) + "\n"
+
+	for _, heading := range []*gansi.StyleBlock{&cfg.H1, &cfg.H2, &cfg.H3, &cfg.H4, &cfg.H5, &cfg.H6} {
+		if strings.HasPrefix(heading.Prefix, "#") {
+			heading.Prefix = ""
+		}
+	}
+
+	if cfg.Code.BackgroundColor == nil {
+		bg := "#24283b"
+		pad := " "
+		cfg.Code.BackgroundColor = &bg
+		cfg.Code.Prefix = pad
+		cfg.Code.Suffix = pad
+	}
+
+	return cfg
+}
