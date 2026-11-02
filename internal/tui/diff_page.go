@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"image/color"
 	"strconv"
 	"strings"
 
@@ -23,17 +24,20 @@ type filePage struct {
 	head        string
 	lines       []pageLine
 	numberWidth int
+	codeWidth   int
 }
 
 // pageLine is a hunk header or one line of code. A long line of code wraps
-// onto more than one row.
+// onto more than one row. op and tokens let a selected line render again.
 type pageLine struct {
 	rows []string
 
 	// code is false for a hunk header. hunk is the index of the hunk.
-	code bool
-	hunk int
-	spot github.DiffLine
+	code   bool
+	hunk   int
+	spot   github.DiffLine
+	op     gitdiff.LineOp
+	tokens []chroma.Token
 }
 
 // codeSpot is the place of a code comment that can get a mark.
@@ -90,10 +94,14 @@ func (m Model) diffContent(loaded *detailLoaded, diff *diffLoaded, width int) (s
 			continue
 		}
 
-		lead, style := " ", number
+		lead, style, code := " ", number, line.rows
 
 		if i >= first && i <= last {
 			lead = bar
+		}
+
+		if diff.selecting && i >= first && i <= last {
+			code = m.diffLine(line.op, line.tokens, page.codeWidth, true)
 		}
 
 		if i == diff.cursor {
@@ -111,7 +119,7 @@ func (m Model) diffContent(loaded *detailLoaded, diff *diffLoaded, width int) (s
 		gutter := lead + style.Render(padLeft(strconv.Itoa(line.spot.Line), page.numberWidth)) + " " + mark
 		blank := lead + strings.Repeat(" ", page.numberWidth+1) + "  "
 
-		for j, row := range line.rows {
+		for j, row := range code {
 			if j > 0 {
 				gutter = blank
 			}
@@ -284,8 +292,7 @@ func (m Model) renderFile(file *gitdiff.File, width int) *filePage {
 		return page
 	}
 
-	code := m.codeStyle()
-	codeWidth := max(1, width-gutterSpace-page.numberWidth-1)
+	page.codeWidth = max(1, width-gutterSpace-page.numberWidth-1)
 
 	for hunk, fragment := range file.TextFragments {
 		header := fitLine(muted.Render(strings.TrimSpace(fragment.Header())), width)
@@ -328,10 +335,12 @@ func (m Model) renderFile(file *gitdiff.File, width int) *filePage {
 			}
 
 			page.lines = append(page.lines, pageLine{
-				rows: m.diffLine(line.Op, tokens, code, codeWidth),
-				code: true,
-				hunk: hunk,
-				spot: spot,
+				rows:   m.diffLine(line.Op, tokens, page.codeWidth, false),
+				code:   true,
+				hunk:   hunk,
+				spot:   spot,
+				op:     line.Op,
+				tokens: tokens,
 			})
 		}
 	}
@@ -403,21 +412,33 @@ func (m Model) fileTitle(file *gitdiff.File, width int) string {
 }
 
 // diffLine colors one line of code and wraps it onto more screen rows. Each
-// row keeps the + or - mark, and a changed line fills the width with its
-// background color.
-func (m Model) diffLine(op gitdiff.LineOp, tokens []chroma.Token, code *chroma.Style, codeWidth int) []string {
+// row keeps the + or - mark. A changed or selected line fills the width
+// with its background color.
+func (m Model) diffLine(op gitdiff.LineOp, tokens []chroma.Token, codeWidth int, selected bool) []string {
 	colors := m.tone()
-	base := lipgloss.NewStyle()
+	code := m.codeStyle()
+	var background color.Color
 	mark := lipgloss.NewStyle().Foreground(colors.muted)
 
 	switch op {
 	case gitdiff.OpAdd:
-		base = base.Background(colors.added)
-		mark = mark.Foreground(colors.good).Background(colors.added)
+		background = colors.added
+		mark = mark.Foreground(colors.good)
 
 	case gitdiff.OpDelete:
-		base = base.Background(colors.removed)
-		mark = mark.Foreground(colors.bad).Background(colors.removed)
+		background = colors.removed
+		mark = mark.Foreground(colors.bad)
+	}
+
+	if selected {
+		background = colors.selected
+	}
+
+	base := lipgloss.NewStyle()
+
+	if background != nil {
+		base = base.Background(background)
+		mark = mark.Background(background)
 	}
 
 	var text strings.Builder

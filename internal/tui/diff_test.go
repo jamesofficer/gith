@@ -227,6 +227,22 @@ func TestRangeCommentIsSentForTheSelectedLines(t *testing.T) {
 	}
 }
 
+func TestSelectedLinesStayHighlightedWhileYouWrite(t *testing.T) {
+	src := newSource()
+	src.diff = "diff --git a/a.go b/a.go\n--- a/a.go\n+++ b/a.go\n@@ -9,2 +9,3 @@\n context\n-old\n+first\n+second\n"
+	m := press(t, openSettingPull(t, src), char('d'))
+	m = press(t, press(t, m, char('j')), char('c'))
+	m = press(t, press(t, m, char('j')), char('c'))
+	r, g, b, _ := m.tone().selected.RGBA()
+	highlight := fmt.Sprintf("48;2;%d;%d;%d", r>>8, g>>8, b>>8)
+
+	for text, want := range map[string]bool{"context": false, "old": true, "first": true, "second": false} {
+		if row := lineWith(m.View().Content, text); strings.Contains(row, highlight) != want {
+			t.Errorf("row %q highlighted = %t, want %t", text, !want, want)
+		}
+	}
+}
+
 func TestDoubleCCommentsOnOneLine(t *testing.T) {
 	src := newSource()
 	src.diff = twoFiles

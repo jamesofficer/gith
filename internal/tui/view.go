@@ -22,8 +22,10 @@ type tone struct {
 	bad    color.Color
 
 	// added and removed are the backgrounds of changed lines in a diff.
-	added   color.Color
-	removed color.Color
+	// selected is the background of the lines that a comment is for.
+	added    color.Color
+	removed  color.Color
+	selected color.Color
 }
 
 func (m Model) tone() tone {
@@ -37,8 +39,9 @@ func (m Model) tone() tone {
 		good:   pick(lipgloss.Color("#15803D"), lipgloss.Color("#4ADE80")),
 		bad:    pick(lipgloss.Color("#B91C1C"), lipgloss.Color("#F87171")),
 
-		added:   pick(lipgloss.Color("#E6FFEC"), lipgloss.Color("#1B3326")),
-		removed: pick(lipgloss.Color("#FFEBE9"), lipgloss.Color("#3B1D22")),
+		added:    pick(lipgloss.Color("#E6FFEC"), lipgloss.Color("#1B3326")),
+		removed:  pick(lipgloss.Color("#FFEBE9"), lipgloss.Color("#3B1D22")),
+		selected: pick(lipgloss.Color("#EDE9FE"), lipgloss.Color("#342A5E")),
 	}
 }
 

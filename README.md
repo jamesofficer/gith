@@ -58,6 +58,6 @@ In an open item, one post fills the screen. The thread holds the description, th
 
 In the diff, one changed file fills the screen, and long lines wrap. `←` and `→` move between files. A cursor marks one line: `↑` `↓` move it 6 lines, and `k` `j` move it 1 line. The left column shows the line number: the new number, or the old number for a removed line. 💬 marks a line that has a comment, and the start of each comment shows under the line. Press `enter` on the line to show its comments in full with their replies, and again to show only the start. `esc` or `d` returns to the thread. A very large pull request can be too large for GitHub to send. Then press `b` to see it in your browser.
 
-To comment on code, press `c` on the first line, move to the last line, and press `c` again. Press `c` two times to comment on one line. A range must stay in one block of changes (`@@`). `esc` cancels the range. The comment is sent at once, not as part of a review.
+To comment on code, press `c` on the first line, move to the last line, and press `c` again. The selected lines get a purple background until you send the comment. Press `c` two times to comment on one line. A range must stay in one block of changes (`@@`). `esc` cancels the range. The comment is sent at once, not as part of a review.
 
 In the comment box, `enter` and `shift+enter` start a new line. `esc` closes the box and keeps your text until you send it.
