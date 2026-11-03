@@ -368,6 +368,7 @@ func (m Model) reloadDetail() (Model, tea.Cmd) {
 	}
 
 	delete(m.cache, m.open.key)
+	delete(m.diffs, m.open.key)
 	m.req++
 	m.open.req = m.req
 	m.viewport.SetYOffset(0)
