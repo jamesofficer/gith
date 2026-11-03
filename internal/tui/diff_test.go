@@ -162,7 +162,7 @@ func cursorLine(m Model) string {
 	return lineWith(screen(m), "▌")
 }
 
-func TestArrowsMoveTheCursorFasterThanJK(t *testing.T) {
+func TestShiftMovesTheCursorFasterThanArrowsAndJK(t *testing.T) {
 	src := newSource()
 	src.diff = fortyLines()
 	m := press(t, openSettingPull(t, src), char('d'))
@@ -175,8 +175,12 @@ func TestArrowsMoveTheCursorFasterThanJK(t *testing.T) {
 		key  tea.KeyPressMsg
 		want string
 	}{
-		{key(tea.KeyDown), "line-07"},
-		{char('j'), "line-08"},
+		{key(tea.KeyDown), "line-02"},
+		{char('j'), "line-03"},
+		{shift(tea.KeyDown), "line-09"},
+		{char('J'), "line-15"},
+		{shift(tea.KeyUp), "line-09"},
+		{char('K'), "line-03"},
 		{key(tea.KeyUp), "line-02"},
 		{char('k'), "line-01"},
 		{key(tea.KeyEnd), "line-40"},
@@ -287,13 +291,13 @@ func TestRangeStaysInsideOneHunk(t *testing.T) {
 	src := newSource()
 	src.diff = "diff --git a/a.go b/a.go\n--- a/a.go\n+++ b/a.go\n@@ -1 +1 @@\n-a\n+b\n@@ -20 +20 @@\n-c\n+d\n"
 	m := press(t, openSettingPull(t, src), char('d'))
-	m = press(t, press(t, m, char('c')), key(tea.KeyDown))
+	m = press(t, press(t, m, char('c')), shift(tea.KeyDown))
 
 	if footer := lineWith(screen(m), "esc cancel"); !strings.Contains(footer, "lines 1–1") {
 		t.Fatalf("range left its hunk: %q\n%s", footer, screen(m))
 	}
 
-	m = press(t, press(t, m, key(tea.KeyEsc)), key(tea.KeyDown))
+	m = press(t, press(t, m, key(tea.KeyEsc)), shift(tea.KeyDown))
 
 	if !strings.Contains(cursorLine(m), "+d") {
 		t.Fatalf("without a range, the cursor did not move to the next hunk:\n%s", screen(m))

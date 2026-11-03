@@ -310,7 +310,7 @@ func (m Model) hints() (string, string) {
 				return "↑↓ jk pick lines   c comment on " + lines + "   esc cancel", ""
 			}
 
-			hint := "↑↓ jk line   n p change   "
+			hint := "↑↓ jk line (shift 6)   n p change   "
 
 			if threads := codeThreads(state.detail.Thread); len(threads) > 0 {
 				if spot, ok := diff.cursorSpot(); ok && len(threads[spot]) > 0 {

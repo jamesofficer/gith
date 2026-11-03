@@ -257,6 +257,10 @@ func char(r rune) tea.KeyPressMsg {
 	return tea.KeyPressMsg{Code: r, Text: string(r)}
 }
 
+func shift(code rune) tea.KeyPressMsg {
+	return tea.KeyPressMsg{Code: code, Mod: tea.ModShift}
+}
+
 func ctrl(code rune) tea.KeyPressMsg {
 	return tea.KeyPressMsg{Code: code, Mod: tea.ModCtrl}
 }

@@ -140,8 +140,9 @@ func (m Model) applyDiff(msg diffMsg) Model {
 	return m
 }
 
-// arrowLines is the number of lines that an arrow key moves the cursor.
-const arrowLines = 6
+// fastLines is the number of lines that shift with an arrow, J, or K moves
+// the cursor.
+const fastLines = 6
 
 // jumpContext is the number of rows that show above the cursor after a jump.
 const jumpContext = 3
@@ -184,17 +185,17 @@ func (m Model) onDiffKey(loaded *detailLoaded, key string) (Model, tea.Cmd) {
 	case "right":
 		return m.moveFile(diff, 1), nil
 
-	case "up":
-		diff.moveCursor(-arrowLines)
-
-	case "down":
-		diff.moveCursor(arrowLines)
-
-	case "k":
+	case "up", "k":
 		diff.moveCursor(-1)
 
-	case "j":
+	case "down", "j":
 		diff.moveCursor(1)
+
+	case "shift+up", "K":
+		diff.moveCursor(-fastLines)
+
+	case "shift+down", "J":
+		diff.moveCursor(fastLines)
 
 	case "pgup":
 		diff.moveCursor(-m.viewport.Height())
