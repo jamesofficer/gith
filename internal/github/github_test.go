@@ -380,3 +380,28 @@ func TestIssueDetailDoesNotLoadCodeComments(t *testing.T) {
 		t.Fatalf("calls = %+v", gh.calls)
 	}
 }
+
+func TestDiffReadsEachFileOfThePullRequest(t *testing.T) {
+	gh := &fakeGH{replies: map[string][]string{"pr": {`diff --git a/timer.go b/timer.go
+--- a/timer.go
++++ b/timer.go
+@@ -1 +1 @@
+-old := 1
++next := 2
+diff --git a/logo.png b/logo.png
+Binary files a/logo.png and b/logo.png differ
+`}}}
+	files, err := testCLI(t, "acme/widgets", 30, gh).Diff(context.Background(), 12)
+
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(files) != 2 || files[0].NewName != "timer.go" || !files[1].IsBinary {
+		t.Fatalf("files = %+v", files)
+	}
+
+	if args := strings.Join(gh.callsOf("pr")[0].args, " "); !strings.HasPrefix(args, "pr diff 12 -R acme/widgets") {
+		t.Fatalf("gh %s", args)
+	}
+}

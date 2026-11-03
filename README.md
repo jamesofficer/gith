@@ -49,10 +49,13 @@ gith -L 50
 | `o` | Open the selected item in your browser |
 | `r` | Load the lists or the open item again |
 | `c` | Write a comment on the open item |
+| `d` | Show the diff of the open pull request |
 | `ctrl+s` | Send the comment (`ctrl+enter` also works in terminals that support it) |
 | `esc` | Close the comment box, or return to the list |
 | `q` | Quit |
 
 In an open item, one post fills the screen. The thread holds the description, the comments, the reviews, and the comments on lines of code, oldest first. A comment on code shows its file, its line, and the diff above it. Its replies go under it with an indent. The top of the post frame shows the place in the thread, such as `4 of 7`. `page up`, `page down`, `home`, and `end` scroll inside that post.
+
+In the diff, one changed file fills the screen, and long lines wrap. `←` and `→` move between files. `↑` `↓` scroll 6 lines, and `k` `j` scroll 1 line. The left column shows the line number: the new number, or the old number for a removed line. `esc` or `d` returns to the thread. A very large pull request can be too large for GitHub to send. Then press `o` to see it in your browser.
 
 In the comment box, `enter` and `shift+enter` start a new line. `esc` closes the box and keeps your text until you send it.

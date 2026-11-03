@@ -13,6 +13,7 @@ const (
 // detailLayout places the header, post, comment box, and footer on the
 // detail screen. One blank line goes between each two blocks.
 type detailLayout struct {
+	// header is empty when the diff shows, to give the code more rows.
 	header string
 	footer string
 
@@ -22,17 +23,24 @@ type detailLayout struct {
 }
 
 func (m Model) detailLayout() detailLayout {
-	header := m.frameBox(m.detailHeader(), 0)
 	footer := m.footer()
 	frame := m.frameHeight()
 	c := m.compose()
-	blocks := 3
+	blocks := 2
+	free := m.height - lipgloss.Height(footer)
+	header := ""
+
+	if loaded := m.loaded(); loaded == nil || loaded.diff == nil {
+		header = m.frameBox(m.detailHeader(), 0)
+		free -= lipgloss.Height(header)
+		blocks++
+	}
 
 	if c != nil {
 		blocks++
 	}
 
-	free := m.height - lipgloss.Height(header) - lipgloss.Height(footer) - (blocks - 1)
+	free -= blocks - 1
 	rows := 0
 
 	if c != nil {

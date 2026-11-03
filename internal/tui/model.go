@@ -9,6 +9,7 @@ import (
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/bluekeyes/go-gitdiff/gitdiff"
 
 	"github.com/jamesofficer/gith/internal/github"
 )
@@ -51,6 +52,9 @@ type detailLoaded struct {
 	postsDark bool
 	index     int
 	compose   *compose
+
+	// diff is nil when the thread shows.
+	diff diffState
 }
 
 func (*detailLoading) isDetailState() {}
@@ -75,6 +79,7 @@ type Model struct {
 	open    *openItem
 	problem string
 	cache   map[itemKey]github.Detail
+	diffs   map[itemKey][]*gitdiff.File
 	drafts  map[itemKey]string
 	req     int
 }
@@ -111,6 +116,7 @@ func New(source github.Source, repo string) Model {
 		issues:   list{loading: true},
 		pulls:    list{loading: true},
 		cache:    map[itemKey]github.Detail{},
+		diffs:    map[itemKey][]*gitdiff.File{},
 		drafts:   map[itemKey]string{},
 		spin:     spinner.New(spinner.WithSpinner(spinner.MiniDot)),
 		viewport: viewport.New(),
@@ -168,6 +174,9 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 
 	case detailMsg:
 		return m.applyDetail(msg), nil
+
+	case diffMsg:
+		return m.applyDiff(msg), nil
 
 	case commentMsg:
 		return m.applyComment(msg)
@@ -248,6 +257,12 @@ func (m Model) onListKey(key string) (Model, tea.Cmd) {
 }
 
 func (m Model) onDetailKey(key string) (Model, tea.Cmd) {
+	loaded := m.loaded()
+
+	if loaded != nil && loaded.diff != nil {
+		return m.onDiffKey(loaded, key)
+	}
+
 	switch key {
 	case "esc", "backspace":
 		m.open = nil
@@ -260,6 +275,11 @@ func (m Model) onDetailKey(key string) (Model, tea.Cmd) {
 
 	case "c":
 		return m.startCompose()
+
+	case "d":
+		if loaded != nil {
+			return m.openDiff(loaded)
+		}
 
 	case "up":
 		return m.moveThread(-1), nil
@@ -375,6 +395,7 @@ func (m Model) refreshLists() (Model, tea.Cmd) {
 	m.issues.loading = true
 	m.pulls.loading = true
 	clear(m.cache)
+	clear(m.diffs)
 
 	return m, tea.Batch(m.spin.Tick, m.loadList(github.KindIssue), m.loadList(github.KindPull))
 }
@@ -457,7 +478,13 @@ func (m Model) sync() Model {
 	}
 
 	layout := m.detailLayout()
-	content := m.postContent(loaded)
+	var content string
+
+	if diff, ok := loaded.diff.(*diffLoaded); ok {
+		content = m.diffPage(diff, width)
+	} else {
+		content = m.postContent(loaded)
+	}
 
 	if c := loaded.compose; c != nil {
 		c.box.SetStyles(m.commentStyles())
@@ -486,7 +513,9 @@ func (m Model) busy() bool {
 		return true
 
 	case *detailLoaded:
-		return state.compose != nil && state.compose.sending
+		_, diffLoading := state.diff.(*diffLoading)
+
+		return diffLoading || (state.compose != nil && state.compose.sending)
 	}
 
 	return false

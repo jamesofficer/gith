@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bluekeyes/go-gitdiff/gitdiff"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -102,6 +103,7 @@ type Detail struct {
 type Source interface {
 	List(ctx context.Context, kind Kind) ([]Item, error)
 	Detail(ctx context.Context, kind Kind, number int) (Detail, error)
+	Diff(ctx context.Context, number int) ([]*gitdiff.File, error)
 	Comment(ctx context.Context, number int, body string) (Post, error)
 	Browse(ctx context.Context, number int) error
 }
@@ -361,6 +363,23 @@ func (c CLI) Comment(ctx context.Context, number int, body string) (Post, error)
 	}
 
 	return parseCreatedPost(out)
+}
+
+// Diff returns the changed files of a pull request, in the order of the diff.
+func (c CLI) Diff(ctx context.Context, number int) ([]*gitdiff.File, error) {
+	out, err := c.run(ctx, nil, "pr", "diff", strconv.Itoa(number), "-R", c.repo.flag(), "--color", "never")
+
+	if err != nil {
+		return nil, err
+	}
+
+	files, _, err := gitdiff.Parse(bytes.NewReader(out))
+
+	if err != nil {
+		return nil, fmt.Errorf("could not read the diff: %w", err)
+	}
+
+	return files, nil
 }
 
 // Browse opens an issue or a pull request in the web browser.
