@@ -519,7 +519,12 @@ func (m Model) sync() Model {
 		offset := rowsInView(m.viewport.YOffset(), m.viewport.Height(), cursorTop, cursorBottom)
 
 		if diff.jumped {
-			offset = max(0, cursorTop-jumpContext)
+			offset = cursorTop - jumpContext
+		}
+
+		// A scroll of only a few rows hides the file name for little gain.
+		if diff.jumped && offset <= jumpContext {
+			offset = 0
 		}
 
 		diff.follow, diff.jumped = false, false

@@ -494,6 +494,18 @@ func TestNAndPMoveBetweenBlocksOfChanges(t *testing.T) {
 	}
 }
 
+func TestNKeepsTheFileNameOnScreenWhenTheChangeIsNearTheTop(t *testing.T) {
+	src := newSource()
+	src.diff = "diff --git a/a.go b/a.go\n--- a/a.go\n+++ b/a.go\n@@ -1 +1 @@\n-a\n+A\n" +
+		"diff --git a/b.go b/b.go\n--- a/b.go\n+++ b/b.go\n@@ -10,4 +10,40 @@\n c1\n c2\n c3\n-old\n" +
+		strings.Repeat("+new\n", 37)
+	m := press(t, press(t, openSettingPull(t, src), char('d')), char('n'))
+
+	if !strings.Contains(cursorLine(m), "-old") || lineWith(screen(m), "b.go") == "" {
+		t.Fatalf("n hid the file name:\n%s", screen(m))
+	}
+}
+
 func TestShiftNAndPMoveBetweenComments(t *testing.T) {
 	m := press(t, twoFilesWithBlocks(t), char('d'))
 	steps := []struct {
