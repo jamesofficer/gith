@@ -18,10 +18,24 @@ type compose struct {
 	sending bool
 	problem string
 
-	// code is the place of a comment on lines of the diff. It is nil for a
-	// comment on the whole item.
-	code *github.CodeComment
+	// target is where the comment goes, or nil for the whole item.
+	target target
 }
+
+// target is *codeTarget or *replyTarget.
+type target interface{ isTarget() }
+
+// codeTarget is a new comment on lines of the diff.
+type codeTarget struct{ comment github.CodeComment }
+
+// replyTarget is a reply to a code comment. A sent reply goes into thread.
+type replyTarget struct {
+	author string
+	thread *github.CodeThread
+}
+
+func (*codeTarget) isTarget()  {}
+func (*replyTarget) isTarget() {}
 
 // draftKey finds the unsent text of a comment box. place is empty for a
 // comment on the whole item.
@@ -31,14 +45,18 @@ type draftKey struct {
 }
 
 func (c *compose) draftKey(item itemKey) draftKey {
-	if c.code == nil {
-		return draftKey{item: item}
+	switch t := c.target.(type) {
+	case *codeTarget:
+		return draftKey{item: item, place: fmt.Sprintf("%s:%v:%v", t.comment.Path, t.comment.Start, t.comment.End)}
+
+	case *replyTarget:
+		return draftKey{item: item, place: fmt.Sprintf("reply:%d", t.thread.ID)}
 	}
 
-	return draftKey{item: item, place: fmt.Sprintf("%s:%v:%v", c.code.Path, c.code.Start, c.code.End)}
+	return draftKey{item: item}
 }
 
-func (m Model) startCompose(code *github.CodeComment) (Model, tea.Cmd) {
+func (m Model) startCompose(target target) (Model, tea.Cmd) {
 	loaded := m.loaded()
 
 	if loaded == nil {
@@ -53,11 +71,15 @@ func (m Model) startCompose(code *github.CodeComment) (Model, tea.Cmd) {
 	box.KeyMap.InsertNewline.SetKeys(append(box.KeyMap.InsertNewline.Keys(), "shift+enter")...)
 	box.SetStyles(m.commentStyles())
 
-	if code != nil {
-		box.Placeholder = "Write a comment on " + code.Path + " " + linesName(*code)
+	switch t := target.(type) {
+	case *codeTarget:
+		box.Placeholder = "Write a comment on " + t.comment.Path + " " + linesName(t.comment)
+
+	case *replyTarget:
+		box.Placeholder = fmt.Sprintf("Write a reply to %s on %s line %d", t.author, t.thread.Path, t.thread.Line)
 	}
 
-	c := &compose{box: box, code: code}
+	c := &compose{box: box, target: target}
 	c.box.SetValue(m.drafts[c.draftKey(m.open.key)])
 	loaded.compose = c
 
@@ -119,25 +141,25 @@ func (m Model) sendComment(c *compose) (Model, tea.Cmd) {
 	c.sending = true
 	c.problem = ""
 	c.box.Blur()
-	source, key, req := m.source, m.open.key, m.open.req
-	var code github.CodeComment
-
-	if c.code != nil {
-		code = *c.code
-		code.Body = body
-	}
+	source, key, req, target := m.source, m.open.key, m.open.req, c.target
 
 	return m, tea.Batch(m.spin.Tick, request(func(ctx context.Context) tea.Msg {
-		var post github.Post
-		var err error
+		msg := commentMsg{req: req, key: key}
 
-		if code.Path != "" {
-			post, err = source.CommentOnCode(ctx, key.number, code)
-		} else {
-			post, err = source.Comment(ctx, key.number, body)
+		switch t := target.(type) {
+		case *codeTarget:
+			code := t.comment
+			code.Body = body
+			msg.post, msg.err = source.CommentOnCode(ctx, key.number, code)
+
+		case *replyTarget:
+			msg.reply, msg.err = source.ReplyToCode(ctx, key.number, t.thread.ID, body)
+
+		default:
+			msg.post, msg.err = source.Comment(ctx, key.number, body)
 		}
 
-		return commentMsg{req: req, key: key, post: post, err: err}
+		return msg
 	}))
 }
 
@@ -161,8 +183,20 @@ func (m Model) applyComment(msg commentMsg) (Model, tea.Cmd) {
 
 	delete(m.drafts, c.draftKey(msg.key))
 	loaded.compose = nil
-	loaded.detail.Thread = append(loaded.detail.Thread, msg.post)
 	loaded.posts = nil
+
+	if reply, ok := c.target.(*replyTarget); ok {
+		reply.thread.Replies = append(reply.thread.Replies, msg.reply)
+		m.cache[msg.key] = loaded.detail
+
+		if diff, ok := loaded.diff.(*diffLoaded); ok {
+			diff.threads = nil
+		}
+
+		return m, nil
+	}
+
+	loaded.detail.Thread = append(loaded.detail.Thread, msg.post)
 
 	if diff, ok := loaded.diff.(*diffLoaded); ok {
 		diff.selecting = false

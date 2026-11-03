@@ -271,6 +271,7 @@ func parseCreatedCodePost(data []byte) (Post, error) {
 	}
 
 	var raw struct {
+		ID       int64  `json:"id"`
 		Path     string `json:"path"`
 		Line     int    `json:"line"`
 		Side     Side   `json:"side"`
@@ -281,25 +282,55 @@ func parseCreatedCodePost(data []byte) (Post, error) {
 		return Post{}, fmt.Errorf("gh did not return the comment: %w", err)
 	}
 
-	post.Code = &CodeThread{Path: raw.Path, Line: raw.Line, Side: raw.Side, Hunk: raw.DiffHunk}
+	post.Code = &CodeThread{ID: raw.ID, Path: raw.Path, Line: raw.Line, Side: raw.Side, Hunk: raw.DiffHunk}
 
 	return post, nil
 }
 
-func parseHeadCommit(data []byte) (string, error) {
+// parseFilesPage reads one page of the files of a pull request. The ID and
+// the commit come with each page.
+func parseFilesPage(data []byte) (PullDiff, string, error) {
 	var raw struct {
-		HeadRefOid string `json:"headRefOid"`
+		Data struct {
+			Repository *struct {
+				PullRequest *struct {
+					ID         string `json:"id"`
+					HeadRefOid string `json:"headRefOid"`
+					Files      struct {
+						Nodes []struct {
+							Path   string    `json:"path"`
+							Viewed ViewState `json:"viewerViewedState"`
+						} `json:"nodes"`
+						PageInfo pageInfo `json:"pageInfo"`
+					} `json:"files"`
+				} `json:"pullRequest"`
+			} `json:"repository"`
+		} `json:"data"`
 	}
 
 	if err := json.Unmarshal(data, &raw); err != nil {
-		return "", fmt.Errorf("gh did not return the head commit: %w", err)
+		return PullDiff{}, "", err
 	}
 
-	if raw.HeadRefOid == "" {
-		return "", errors.New("gh did not return the head commit")
+	pull := raw.Data.Repository
+
+	if pull == nil || pull.PullRequest == nil || pull.PullRequest.ID == "" || pull.PullRequest.HeadRefOid == "" {
+		return PullDiff{}, "", errors.New("gh did not return the pull request")
 	}
 
-	return raw.HeadRefOid, nil
+	next, err := pull.PullRequest.Files.PageInfo.next()
+
+	if err != nil {
+		return PullDiff{}, "", err
+	}
+
+	page := PullDiff{ID: pull.PullRequest.ID, Commit: pull.PullRequest.HeadRefOid, Viewed: map[string]ViewState{}}
+
+	for _, file := range pull.PullRequest.Files.Nodes {
+		page.Viewed[file.Path] = file.Viewed
+	}
+
+	return page, next, nil
 }
 
 func sortThread(thread []Post) {
@@ -309,11 +340,12 @@ func sortThread(thread []Post) {
 }
 
 type rawCodeComment struct {
-	Author    rawAuthor `json:"author"`
-	Body      string    `json:"body"`
-	CreatedAt time.Time `json:"createdAt"`
-	State     string    `json:"state"`
-	DiffHunk  string    `json:"diffHunk"`
+	DatabaseID int64     `json:"databaseId"`
+	Author     rawAuthor `json:"author"`
+	Body       string    `json:"body"`
+	CreatedAt  time.Time `json:"createdAt"`
+	State      string    `json:"state"`
+	DiffHunk   string    `json:"diffHunk"`
 }
 
 type rawThread struct {
@@ -387,6 +419,7 @@ func parseThreadPage(data []byte) ([]Post, string, error) {
 			Body:      root.Body,
 			CreatedAt: root.CreatedAt,
 			Code: &CodeThread{
+				ID:          root.DatabaseID,
 				Path:        thread.Path,
 				Line:        lineOf(thread),
 				Side:        thread.DiffSide,

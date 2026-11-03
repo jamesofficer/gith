@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"strings"
 	"testing"
 	"time"
@@ -35,12 +36,16 @@ type fakeSource struct {
 	browseErr  error
 	diff       string
 	diffErr    error
+	viewed     map[string]github.ViewState
+	viewedErr  error
 
 	listCalls   int
 	detailCalls int
 	diffCalls   int
 
 	codeComments []github.CodeComment
+	viewedCalls  []viewedCall
+	replies      []posted
 	posted       []posted
 	browsed      []int
 }
@@ -84,7 +89,21 @@ func (f *fakeSource) Diff(_ context.Context, _ int) (github.PullDiff, error) {
 
 	files, _, err := gitdiff.Parse(strings.NewReader(f.diff))
 
-	return github.PullDiff{Commit: "head-sha", Files: files}, err
+	viewed := map[string]github.ViewState{}
+	maps.Copy(viewed, f.viewed)
+
+	return github.PullDiff{ID: "PR_4", Commit: "head-sha", Files: files, Viewed: viewed}, err
+}
+
+type viewedCall struct {
+	pull, path string
+	viewed     bool
+}
+
+func (f *fakeSource) SetViewed(_ context.Context, pull, path string, viewed bool) error {
+	f.viewedCalls = append(f.viewedCalls, viewedCall{pull: pull, path: path, viewed: viewed})
+
+	return f.viewedErr
 }
 
 func (f *fakeSource) CommentOnCode(_ context.Context, _ int, comment github.CodeComment) (github.Post, error) {
@@ -97,6 +116,17 @@ func (f *fakeSource) CommentOnCode(_ context.Context, _ int, comment github.Code
 	code := &github.CodeThread{Path: comment.Path, Line: comment.End.Line, Side: comment.End.Side}
 
 	return github.Post{Author: "ada", Body: comment.Body, CreatedAt: when, Code: code}, nil
+}
+
+// ReplyToCode records the ID of the comment in posted.number.
+func (f *fakeSource) ReplyToCode(_ context.Context, _ int, thread int64, body string) (github.Reply, error) {
+	f.replies = append(f.replies, posted{number: int(thread), body: body})
+
+	if f.commentErr != nil {
+		return github.Reply{}, f.commentErr
+	}
+
+	return github.Reply{Author: "ada", Body: body, CreatedAt: when}, nil
 }
 
 func (f *fakeSource) Comment(_ context.Context, number int, body string) (github.Post, error) {
@@ -411,6 +441,10 @@ func TestQuitKeys(t *testing.T) {
 	if _, cmd := update(t, m, key(tea.KeyEsc)); quits(cmd) {
 		t.Fatal("esc on the list quit the app")
 	}
+
+	if _, cmd := update(t, openCacheIssue(t, newSource()), char('q')); quits(cmd) {
+		t.Fatal("q in an open item quit the app")
+	}
 }
 
 func TestItemLoadedAfterLeavingIsKept(t *testing.T) {
@@ -472,10 +506,10 @@ func TestRefreshLoadsNewData(t *testing.T) {
 
 func TestOpenInBrowser(t *testing.T) {
 	src := newSource()
-	m := press(t, start(t, src), char('o'))
+	m := press(t, start(t, src), char('b'))
 	m = press(t, press(t, m, key(tea.KeyDown)), key(tea.KeyEnter))
 	src.browseErr = errors.New("no browser")
-	m = press(t, m, char('o'))
+	m = press(t, m, char('b'))
 
 	if fmt.Sprint(src.browsed) != "[12 9]" {
 		t.Fatalf("browsed = %v", src.browsed)

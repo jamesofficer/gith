@@ -22,8 +22,15 @@ type tone struct {
 	bad    color.Color
 
 	// added and removed are the backgrounds of changed lines in a diff.
-	added   color.Color
-	removed color.Color
+	// selected is the background of the lines that a comment is for.
+	added    color.Color
+	removed  color.Color
+	selected color.Color
+
+	// faded, fadedAdded and fadedRemoved draw the code of a viewed file.
+	faded        color.Color
+	fadedAdded   color.Color
+	fadedRemoved color.Color
 }
 
 func (m Model) tone() tone {
@@ -37,8 +44,13 @@ func (m Model) tone() tone {
 		good:   pick(lipgloss.Color("#15803D"), lipgloss.Color("#4ADE80")),
 		bad:    pick(lipgloss.Color("#B91C1C"), lipgloss.Color("#F87171")),
 
-		added:   pick(lipgloss.Color("#E6FFEC"), lipgloss.Color("#1B3326")),
-		removed: pick(lipgloss.Color("#FFEBE9"), lipgloss.Color("#3B1D22")),
+		added:    pick(lipgloss.Color("#E6FFEC"), lipgloss.Color("#1B3326")),
+		removed:  pick(lipgloss.Color("#FFEBE9"), lipgloss.Color("#3B1D22")),
+		selected: pick(lipgloss.Color("#EDE9FE"), lipgloss.Color("#342A5E")),
+
+		faded:        pick(lipgloss.Color("#A1A1AA"), lipgloss.Color("#71717A")),
+		fadedAdded:   pick(lipgloss.Color("#F4FFF6"), lipgloss.Color("#17231C")),
+		fadedRemoved: pick(lipgloss.Color("#FFF6F5"), lipgloss.Color("#261A1D")),
 	}
 }
 
@@ -252,7 +264,7 @@ func (m Model) hints() (string, string) {
 			right = fmt.Sprintf("%d of %d", active.cursor+1, len(active.items))
 		}
 
-		return "↑↓ move   ←→ switch   enter open   o browser   r refresh   q quit", right
+		return "↑↓ move   ←→ switch   enter open   b browser   r refresh   q quit", right
 	}
 
 	switch state := m.open.state.(type) {
@@ -263,28 +275,42 @@ func (m Model) hints() (string, string) {
 				first, last := min(diff.anchor, diff.cursor), max(diff.anchor, diff.cursor)
 				lines := linesName(github.CodeComment{Start: page.lines[first].spot, End: page.lines[last].spot})
 
-				return "↑↓ jk pick lines   c comment on " + lines + "   esc cancel   q quit", ""
+				return "↑↓ jk pick lines   c comment on " + lines + "   esc cancel", ""
 			}
 
-			return "↑↓ jk line   c select   ←→ file   o browser   r refresh   esc back   q quit", ""
+			hint := "↑↓ jk line   n p change   "
+
+			if threads := codeThreads(state.detail.Thread); len(threads) > 0 {
+				if spot, ok := diff.cursorSpot(); ok && len(threads[spot]) > 0 {
+					hint += "enter comments   R reply   "
+				}
+
+				if diff.collapsed {
+					hint += "N P comment   e expand   "
+				} else {
+					hint += "N P comment   e collapse   "
+				}
+			}
+
+			return hint + "c select   v viewed   ←→ file   esc back", ""
 
 		case *diffFailed:
-			return "r retry   o browser   esc back   q quit", ""
+			return "r retry   b browser   esc back", ""
 
 		case *diffLoading:
-			return "esc back   q quit", ""
+			return "esc back", ""
 		}
 
 		if m.open.key.kind == github.KindPull {
-			return "↑↓ thread   d diff   c comment   o browser   r refresh   esc back   q quit", ""
+			return "↑↓ thread   d diff   c comment   b browser   r refresh   esc back", ""
 		}
 
-		return "↑↓ thread   c comment   o browser   r refresh   esc back   q quit", ""
+		return "↑↓ thread   c comment   b browser   r refresh   esc back", ""
 
 	case *detailFailed:
-		return "r retry   esc back   q quit", ""
+		return "r retry   esc back", ""
 
 	default:
-		return "esc back   q quit", ""
+		return "esc back", ""
 	}
 }

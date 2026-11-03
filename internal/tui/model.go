@@ -96,11 +96,14 @@ type detailMsg struct {
 	err    error
 }
 
+// commentMsg is a sent comment. reply is set for a reply, and post for
+// all other comments.
 type commentMsg struct {
-	req  int
-	key  itemKey
-	post github.Post
-	err  error
+	req   int
+	key   itemKey
+	post  github.Post
+	reply github.Reply
+	err   error
 }
 
 type browseMsg struct{ err error }
@@ -180,6 +183,9 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 	case commentMsg:
 		return m.applyComment(msg)
 
+	case viewedMsg:
+		return m.applyViewed(msg), nil
+
 	case browseMsg:
 		if msg.err != nil {
 			m.problem = "Could not open the browser. " + msg.err.Error()
@@ -216,7 +222,7 @@ func (m Model) onKey(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 	m.problem = ""
 	key := msg.String()
 
-	if key == "q" || key == "ctrl+c" {
+	if key == "ctrl+c" || (key == "q" && m.open == nil) {
 		return m, tea.Quit
 	}
 
@@ -243,7 +249,7 @@ func (m Model) onListKey(key string) (Model, tea.Cmd) {
 	case "enter":
 		return m.openSelected()
 
-	case "o":
+	case "b":
 		if item, ok := active.current(); ok {
 			return m, m.browse(item.Number)
 		}
@@ -266,7 +272,7 @@ func (m Model) onDetailKey(key string) (Model, tea.Cmd) {
 	case "esc", "backspace":
 		m.open = nil
 
-	case "o":
+	case "b":
 		return m, m.browse(m.open.key.number)
 
 	case "r":
@@ -498,8 +504,14 @@ func (m Model) sync() Model {
 	m.viewport.SetContent(content)
 
 	if showDiff && diff.follow {
-		diff.follow = false
-		m.viewport.SetYOffset(rowsInView(m.viewport.YOffset(), m.viewport.Height(), cursorTop, cursorBottom))
+		offset := rowsInView(m.viewport.YOffset(), m.viewport.Height(), cursorTop, cursorBottom)
+
+		if diff.jumped {
+			offset = max(0, cursorTop-jumpContext)
+		}
+
+		diff.follow, diff.jumped = false, false
+		m.viewport.SetYOffset(offset)
 	}
 
 	return m

@@ -43,7 +43,7 @@ func (m Model) detailView() string {
 
 		case *diffFailed:
 			post = m.frameBox(lipgloss.NewStyle().Foreground(colors.bad).Width(m.contentWidth()).Render(
-				"Could not load the diff. Press o to see it on GitHub.\n\n"+diff.err.Error(),
+				"Could not load the diff. Press b to see it on GitHub.\n\n"+diff.err.Error(),
 			), layout.postHeight)
 
 		case *diffLoaded:
@@ -174,13 +174,25 @@ func (m Model) postContent(loaded *detailLoaded) string {
 
 	post := loaded.detail.Thread[loaded.index-1]
 	width := m.contentWidth()
+	text := m.postWithReplies(post, rendered, width)
+
+	if post.Code == nil {
+		return text
+	}
+
+	return m.codePlace(*post.Code, width) + "\n\n" + text
+}
+
+// postWithReplies is the byline and body of a post. A code comment also
+// shows its replies with an indent.
+func (m Model) postWithReplies(post github.Post, rendered renderedPost, width int) string {
 	text := m.byline(post.Author, verdictName(post.Review), post.CreatedAt, width) + "\n\n" + rendered.body
 
 	if post.Code == nil {
 		return text
 	}
 
-	sections := []string{m.codePlace(*post.Code, width), text}
+	sections := []string{text}
 
 	for i, reply := range post.Code.Replies {
 		byline := m.byline(reply.Author, "", reply.CreatedAt, width-replyIndent)
@@ -188,10 +200,10 @@ func (m Model) postContent(loaded *detailLoaded) string {
 	}
 
 	if more := post.Code.MoreReplies; more > 0 {
-		note := fmt.Sprintf("%d more replies on GitHub. Press o to read them.", more)
+		note := fmt.Sprintf("%d more replies on GitHub. Press b to read them.", more)
 
 		if more == 1 {
-			note = "1 more reply on GitHub. Press o to read it."
+			note = "1 more reply on GitHub. Press b to read it."
 		}
 
 		sections = append(sections, m.indent(lipgloss.NewStyle().Foreground(m.tone().muted).Render(note)))

@@ -42,30 +42,73 @@ func renderPosts(detail github.Detail, width int, dark bool) ([]renderedPost, er
 	posts := []renderedPost{{body: description}}
 
 	for _, p := range detail.Thread {
-		body, err := render(post, p.Body, "_No comment._")
+		rendered, err := renderPost(p, post, reply)
 
 		if err != nil {
 			return nil, err
-		}
-
-		rendered := renderedPost{body: body}
-
-		if p.Code != nil {
-			for _, r := range p.Code.Replies {
-				text, err := render(reply, r.Body, "_No comment._")
-
-				if err != nil {
-					return nil, err
-				}
-
-				rendered.replies = append(rendered.replies, text)
-			}
 		}
 
 		posts = append(posts, rendered)
 	}
 
 	return posts, nil
+}
+
+// renderCodeThreads renders each code comment of the thread, by its index in
+// the thread, for the inline view in the diff.
+func renderCodeThreads(thread []github.Post, width int, dark bool) (map[int]renderedPost, error) {
+	post, err := markdownRenderer(width, dark)
+
+	if err != nil {
+		return nil, err
+	}
+
+	reply, err := markdownRenderer(max(1, width-replyIndent), dark)
+
+	if err != nil {
+		return nil, err
+	}
+
+	threads := map[int]renderedPost{}
+
+	for i, p := range thread {
+		if p.Code == nil {
+			continue
+		}
+
+		if threads[i], err = renderPost(p, post, reply); err != nil {
+			return nil, err
+		}
+	}
+
+	return threads, nil
+}
+
+// renderPost renders the body of a post and the replies to a code comment.
+func renderPost(p github.Post, post, reply *glamour.TermRenderer) (renderedPost, error) {
+	body, err := render(post, p.Body, "_No comment._")
+
+	if err != nil {
+		return renderedPost{}, err
+	}
+
+	rendered := renderedPost{body: body}
+
+	if p.Code == nil {
+		return rendered, nil
+	}
+
+	for _, r := range p.Code.Replies {
+		text, err := render(reply, r.Body, "_No comment._")
+
+		if err != nil {
+			return renderedPost{}, err
+		}
+
+		rendered.replies = append(rendered.replies, text)
+	}
+
+	return rendered, nil
 }
 
 func markdownRenderer(width int, dark bool) (*glamour.TermRenderer, error) {

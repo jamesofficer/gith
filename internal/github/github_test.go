@@ -22,8 +22,9 @@ type fakeGH struct {
 	calls   []call
 }
 
-// callType is "list" or "threads" for GraphQL calls, "rest" for other API
-// calls, and the gh command, such as "pr", for all other calls.
+// callType is "list", "threads", "files", or "viewed" for GraphQL calls,
+// "rest" for other API calls, and the gh command, such as "pr", for all
+// other calls.
 func callType(args []string) string {
 	if args[0] != "api" {
 		return args[0]
@@ -33,8 +34,17 @@ func callType(args []string) string {
 		return "rest"
 	}
 
-	if strings.Contains(strings.Join(args, " "), "reviewThreads") {
+	joined := strings.Join(args, " ")
+
+	switch {
+	case strings.Contains(joined, "reviewThreads"):
 		return "threads"
+
+	case strings.Contains(joined, "viewerViewedState"):
+		return "files"
+
+	case strings.Contains(joined, "FileAsViewed"):
+		return "viewed"
 	}
 
 	return "list"
@@ -325,7 +335,7 @@ func threads(more bool) string {
 		"nodes": [{
 			"path": "timer.go", "line": null, "originalLine": 85, "diffSide": "LEFT", "isResolved": true, "isOutdated": true,
 			"comments": {"totalCount": 4, "nodes": [
-				{"author": {"login": "sam"}, "body": "Use a constant.", "createdAt": "2026-10-30T11:10:00Z", "state": "SUBMITTED", "diffHunk": "@@ -1 +1 @@\n-a\n+b"},
+				{"databaseId": 501, "author": {"login": "sam"}, "body": "Use a constant.", "createdAt": "2026-10-30T11:10:00Z", "state": "SUBMITTED", "diffHunk": "@@ -1 +1 @@\n-a\n+b"},
 				{"author": {"login": "ada"}, "body": "Done.", "createdAt": "2026-10-30T13:00:00Z", "state": "SUBMITTED"},
 				{"author": {"login": "sam"}, "body": "Not sent", "createdAt": "2026-10-30T14:00:00Z", "state": "PENDING"}
 			]}
@@ -356,7 +366,7 @@ func TestCodeCommentKeepsItsPlaceAndReplies(t *testing.T) {
 		t.Fatalf("post = %+v", post)
 	}
 
-	if code.Path != "timer.go" || code.Line != 85 || code.Side != SideOld || !code.Resolved || !code.Outdated || code.Hunk != "@@ -1 +1 @@\n-a\n+b" {
+	if code.ID != 501 || code.Path != "timer.go" || code.Line != 85 || code.Side != SideOld || !code.Resolved || !code.Outdated || code.Hunk != "@@ -1 +1 @@\n-a\n+b" {
 		t.Fatalf("code = %+v", code)
 	}
 
@@ -381,8 +391,18 @@ func TestIssueDetailDoesNotLoadCodeComments(t *testing.T) {
 	}
 }
 
+// files is one page of the files of pull request 12.
+func files(nodes string, more bool) string {
+	return fmt.Sprintf(`{"data": {"repository": {"pullRequest": {"id": "PR_12", "headRefOid": "abc123", "files": {
+		"nodes": [%s], "pageInfo": {"hasNextPage": %t, "endCursor": "files-2"}
+	}}}}}`, nodes, more)
+}
+
 func TestDiffReadsEachFileOfThePullRequest(t *testing.T) {
-	gh := &fakeGH{replies: map[string][]string{"pr": {`{"headRefOid": "abc123"}`, `diff --git a/timer.go b/timer.go
+	gh := &fakeGH{replies: map[string][]string{"files": {
+		files(`{"path": "timer.go", "viewerViewedState": "VIEWED"}`, true),
+		files(`{"path": "logo.png", "viewerViewedState": "DISMISSED"}`, false),
+	}, "pr": {`diff --git a/timer.go b/timer.go
 --- a/timer.go
 +++ b/timer.go
 @@ -1 +1 @@
@@ -399,17 +419,50 @@ Binary files a/logo.png and b/logo.png differ
 
 	files := diff.Files
 
-	if diff.Commit != "abc123" || len(files) != 2 || files[0].NewName != "timer.go" || !files[1].IsBinary {
+	if diff.ID != "PR_12" || diff.Commit != "abc123" || len(files) != 2 || files[0].NewName != "timer.go" || !files[1].IsBinary {
 		t.Fatalf("diff = %+v", diff)
 	}
 
-	if args := strings.Join(gh.callsOf("pr")[1].args, " "); !strings.HasPrefix(args, "pr diff 12 -R acme/widgets") {
+	if diff.Viewed["timer.go"] != Viewed || diff.Viewed["logo.png"] != ChangedSinceViewed {
+		t.Fatalf("viewed = %v", diff.Viewed)
+	}
+
+	if after := gh.callsOf("files")[1].value("-f", "after"); after != "files-2" {
+		t.Fatalf("second file page after = %q", after)
+	}
+
+	if args := strings.Join(gh.callsOf("pr")[0].args, " "); !strings.HasPrefix(args, "pr diff 12 -R acme/widgets") {
 		t.Fatalf("gh %s", args)
+	}
+
+	if first, diffCall := gh.calls[0], gh.callsOf("pr")[0]; callType(first.args) != "files" || callType(diffCall.args) != "pr" {
+		t.Fatal("the head commit was not read before the diff")
+	}
+}
+
+func TestSetViewedMarksAndUnmarksTheFile(t *testing.T) {
+	gh := &fakeGH{replies: map[string][]string{"viewed": {"{}", "{}"}}}
+	cli := testCLI(t, "acme/widgets", 30, gh)
+
+	for _, viewed := range []bool{true, false} {
+		if err := cli.SetViewed(context.Background(), "PR_12", "timer.go", viewed); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	calls := gh.callsOf("viewed")
+
+	for i, want := range []string{"markFileAsViewed", "unmarkFileAsViewed"} {
+		query := calls[i].value("-f", "query")
+
+		if !strings.Contains(query, " "+want+"(") || calls[i].value("-f", "id") != "PR_12" || calls[i].value("-f", "path") != "timer.go" {
+			t.Fatalf("call %d: %v", i, calls[i].args)
+		}
 	}
 }
 
 func TestCommentOnCodeSendsTheRangeOfLines(t *testing.T) {
-	reply := `{"body": "Merge these.", "user": {"login": "ada"}, "created_at": "2026-11-02T03:04:05Z",
+	reply := `{"id": 77, "body": "Merge these.", "user": {"login": "ada"}, "created_at": "2026-11-02T03:04:05Z",
 		"path": "timer.go", "line": 12, "side": "RIGHT", "diff_hunk": "@@ -9 +9,4 @@"}`
 	gh := &fakeGH{replies: map[string][]string{"rest": {reply, reply}}}
 	cli := testCLI(t, "acme/widgets", 30, gh)
@@ -426,7 +479,7 @@ func TestCommentOnCodeSendsTheRangeOfLines(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if post.Author != "ada" || post.Code == nil || post.Code.Path != "timer.go" || post.Code.Line != 12 || post.Code.Side != SideNew {
+	if post.Author != "ada" || post.Code == nil || post.Code.ID != 77 || post.Code.Path != "timer.go" || post.Code.Line != 12 || post.Code.Side != SideNew {
 		t.Fatalf("post = %+v, code = %+v", post, post.Code)
 	}
 
@@ -445,5 +498,24 @@ func TestCommentOnCodeSendsTheRangeOfLines(t *testing.T) {
 
 	if single := gh.callsOf("rest")[1].stdin; strings.Contains(single, "start_line") {
 		t.Fatalf("a comment on one line sent a range: %s", single)
+	}
+}
+
+func TestReplyToCodeAnswersTheComment(t *testing.T) {
+	gh := &fakeGH{replies: map[string][]string{"rest": {`{"id": 78, "body": "Fixed.", "user": {"login": "ada"}, "created_at": "2026-11-02T03:04:05Z"}`}}}
+	reply, err := testCLI(t, "acme/widgets", 30, gh).ReplyToCode(context.Background(), 4, 501, " Fixed.\n")
+
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if reply.Author != "ada" || reply.Body != "Fixed." {
+		t.Fatalf("reply = %+v", reply)
+	}
+
+	sent := gh.callsOf("rest")[0]
+
+	if sent.stdin != `{"body":"Fixed."}` || !slices.Contains(sent.args, "repos/acme/widgets/pulls/4/comments/501/replies") {
+		t.Fatalf("sent %s to %v", sent.stdin, sent.args)
 	}
 }

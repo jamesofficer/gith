@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -93,6 +94,8 @@ type CodeComment struct {
 
 // CodeThread is the place of a code comment in the diff and its replies.
 type CodeThread struct {
+	// ID is the number of the first comment. A reply goes to it.
+	ID   int64
 	Path string
 	Line int
 	Side Side
@@ -135,6 +138,8 @@ type Source interface {
 	Detail(ctx context.Context, kind Kind, number int) (Detail, error)
 	Diff(ctx context.Context, number int) (PullDiff, error)
 	CommentOnCode(ctx context.Context, number int, comment CodeComment) (Post, error)
+	ReplyToCode(ctx context.Context, number int, thread int64, body string) (Reply, error)
+	SetViewed(ctx context.Context, pull, path string, viewed bool) error
 	Comment(ctx context.Context, number int, body string) (Post, error)
 	Browse(ctx context.Context, number int) error
 }
@@ -332,7 +337,7 @@ const threadQuery = `query($owner: String!, $name: String!, $number: Int!, $afte
           path line originalLine diffSide isResolved isOutdated
           comments(first: 100) {
             totalCount
-            nodes { author { login } body createdAt state diffHunk }
+            nodes { databaseId author { login } body createdAt state diffHunk }
           }
         }
         pageInfo { hasNextPage endCursor }
@@ -396,46 +401,106 @@ func (c CLI) Comment(ctx context.Context, number int, body string) (Post, error)
 	return parseCreatedPost(out)
 }
 
+// ViewState tells if the viewer marked a file of a pull request as viewed.
+type ViewState string
+
+const (
+	Unviewed ViewState = "UNVIEWED"
+	Viewed   ViewState = "VIEWED"
+
+	// ChangedSinceViewed is a viewed file that changed after the mark.
+	ChangedSinceViewed ViewState = "DISMISSED"
+)
+
 // PullDiff is the diff of a pull request and the commit that it comes from.
 type PullDiff struct {
+	// ID is the GraphQL ID of the pull request.
+	ID     string
 	Commit string
 
-	// Files holds the changed files, in the order of the diff.
-	Files []*gitdiff.File
+	// Files holds the changed files, in the order of the diff. Viewed holds
+	// the state of each file by its path.
+	Files  []*gitdiff.File
+	Viewed map[string]ViewState
 }
+
+const filesQuery = `query($owner: String!, $name: String!, $number: Int!, $after: String) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      id headRefOid
+      files(first: 100, after: $after) {
+        nodes { path viewerViewedState }
+        pageInfo { hasNextPage endCursor }
+      }
+    }
+  }
+}`
 
 // Diff returns the changed files of a pull request. It reads the head commit
 // first. Then a push during the load makes a later comment fail, and it does
 // not put the comment on the wrong line.
 func (c CLI) Diff(ctx context.Context, number int) (PullDiff, error) {
-	out, err := c.run(ctx, nil, "pr", "view", strconv.Itoa(number), "-R", c.repo.flag(), "--json", "headRefOid")
+	diff := PullDiff{Viewed: map[string]ViewState{}}
+	after := ""
+
+	for {
+		out, err := c.graphql(ctx, filesQuery, after, "-F", "number="+strconv.Itoa(number))
+
+		if err != nil {
+			return PullDiff{}, err
+		}
+
+		page, next, err := parseFilesPage(out)
+
+		if err != nil {
+			return PullDiff{}, err
+		}
+
+		if diff.ID == "" {
+			diff.ID, diff.Commit = page.ID, page.Commit
+		}
+
+		maps.Copy(diff.Viewed, page.Viewed)
+
+		if next == "" {
+			break
+		}
+
+		after = next
+	}
+
+	out, err := c.run(ctx, nil, "pr", "diff", strconv.Itoa(number), "-R", c.repo.flag(), "--color", "never")
 
 	if err != nil {
 		return PullDiff{}, err
 	}
 
-	commit, err := parseHeadCommit(out)
-
-	if err != nil {
-		return PullDiff{}, err
-	}
-
-	out, err = c.run(ctx, nil, "pr", "diff", strconv.Itoa(number), "-R", c.repo.flag(), "--color", "never")
-
-	if err != nil {
-		return PullDiff{}, err
-	}
-
-	files, _, err := gitdiff.Parse(bytes.NewReader(out))
-
-	if err != nil {
+	if diff.Files, _, err = gitdiff.Parse(bytes.NewReader(out)); err != nil {
 		return PullDiff{}, fmt.Errorf("could not read the diff: %w", err)
 	}
 
-	return PullDiff{Commit: commit, Files: files}, nil
+	return diff, nil
 }
 
-// CommentOnCode posts a comment on one line or a range of lines of a pull
+const (
+	markViewed   = `mutation($id: ID!, $path: String!) { markFileAsViewed(input: {pullRequestId: $id, path: $path}) { clientMutationId } }`
+	unmarkViewed = `mutation($id: ID!, $path: String!) { unmarkFileAsViewed(input: {pullRequestId: $id, path: $path}) { clientMutationId } }`
+)
+
+// SetViewed marks a file of the pull request with the ID pull as viewed, or
+// removes the mark.
+func (c CLI) SetViewed(ctx context.Context, pull, path string, viewed bool) error {
+	query := unmarkViewed
+
+	if viewed {
+		query = markViewed
+	}
+
+	_, err := c.run(ctx, nil, c.apiArgs("graphql", "-f", "query="+query, "-f", "id="+pull, "-f", "path="+path)...)
+
+	return err
+}
+
 // request. GitHub sends it at once, not as part of a review.
 func (c CLI) CommentOnCode(ctx context.Context, number int, comment CodeComment) (Post, error) {
 	body := strings.TrimSpace(comment.Body)
@@ -472,6 +537,39 @@ func (c CLI) CommentOnCode(ctx context.Context, number int, comment CodeComment)
 	}
 
 	return parseCreatedCodePost(out)
+}
+
+// ReplyToCode adds a reply to the code comment with the ID thread.
+func (c CLI) ReplyToCode(ctx context.Context, number int, thread int64, body string) (Reply, error) {
+	body = strings.TrimSpace(body)
+
+	if body == "" {
+		return Reply{}, errors.New("reply is empty")
+	}
+
+	payload, err := json.Marshal(struct {
+		Body string `json:"body"`
+	}{Body: body})
+
+	if err != nil {
+		return Reply{}, err
+	}
+
+	path := fmt.Sprintf("repos/%s/pulls/%d/comments/%d/replies", c.repo.FullName(), number, thread)
+	args := c.apiArgs("--method", "POST", "--input", "-", "-H", "Content-Type:application/json", path)
+	out, err := c.run(ctx, payload, args...)
+
+	if err != nil {
+		return Reply{}, err
+	}
+
+	post, err := parseCreatedPost(out)
+
+	if err != nil {
+		return Reply{}, err
+	}
+
+	return Reply{Author: post.Author, Body: post.Body, CreatedAt: post.CreatedAt}, nil
 }
 
 // Browse opens an issue or a pull request in the web browser.
