@@ -262,6 +262,46 @@ func parseCreatedPost(data []byte) (Post, error) {
 	return Post{Author: authorName(login), Body: raw.Body, CreatedAt: raw.CreatedAt}, nil
 }
 
+// parseCreatedCodePost reads a new comment on code, with its place.
+func parseCreatedCodePost(data []byte) (Post, error) {
+	post, err := parseCreatedPost(data)
+
+	if err != nil {
+		return Post{}, err
+	}
+
+	var raw struct {
+		Path     string `json:"path"`
+		Line     int    `json:"line"`
+		Side     Side   `json:"side"`
+		DiffHunk string `json:"diff_hunk"`
+	}
+
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return Post{}, fmt.Errorf("gh did not return the comment: %w", err)
+	}
+
+	post.Code = &CodeThread{Path: raw.Path, Line: raw.Line, Side: raw.Side, Hunk: raw.DiffHunk}
+
+	return post, nil
+}
+
+func parseHeadCommit(data []byte) (string, error) {
+	var raw struct {
+		HeadRefOid string `json:"headRefOid"`
+	}
+
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return "", fmt.Errorf("gh did not return the head commit: %w", err)
+	}
+
+	if raw.HeadRefOid == "" {
+		return "", errors.New("gh did not return the head commit")
+	}
+
+	return raw.HeadRefOid, nil
+}
+
 func sortThread(thread []Post) {
 	slices.SortStableFunc(thread, func(a, b Post) int {
 		return a.CreatedAt.Compare(b.CreatedAt)
@@ -280,6 +320,7 @@ type rawThread struct {
 	Path         string `json:"path"`
 	Line         *int   `json:"line"`
 	OriginalLine *int   `json:"originalLine"`
+	DiffSide     Side   `json:"diffSide"`
 	IsResolved   bool   `json:"isResolved"`
 	IsOutdated   bool   `json:"isOutdated"`
 	Comments     struct {
@@ -348,6 +389,7 @@ func parseThreadPage(data []byte) ([]Post, string, error) {
 			Code: &CodeThread{
 				Path:        thread.Path,
 				Line:        lineOf(thread),
+				Side:        thread.DiffSide,
 				Hunk:        root.DiffHunk,
 				Resolved:    thread.IsResolved,
 				Outdated:    thread.IsOutdated,

@@ -1,0 +1,359 @@
+package tui
+
+import (
+	"fmt"
+	"strconv"
+	"strings"
+
+	"charm.land/lipgloss/v2"
+	"github.com/alecthomas/chroma/v2"
+	"github.com/alecthomas/chroma/v2/styles"
+	"github.com/bluekeyes/go-gitdiff/gitdiff"
+	"github.com/charmbracelet/x/ansi"
+
+	"github.com/jamesofficer/gith/internal/github"
+)
+
+// filePage is one file of the diff, rendered for the screen. The gutter is
+// not in it, because the cursor and the marks in the gutter change often.
+type filePage struct {
+	path string
+
+	// head holds the title of the file and any note above the code.
+	head        string
+	lines       []pageLine
+	numberWidth int
+}
+
+// pageLine is a hunk header or one line of code. A long line of code wraps
+// onto more than one row.
+type pageLine struct {
+	rows []string
+
+	// code is false for a hunk header. hunk is the index of the hunk.
+	code bool
+	hunk int
+	spot github.DiffLine
+}
+
+// codeSpot is the place of a code comment that can get a mark.
+type codeSpot struct {
+	path string
+	spot github.DiffLine
+}
+
+// gutterSpace is the width of the selection bar, the space after the line
+// number, and the comment mark.
+const gutterSpace = 4
+
+// diffContent is the shown file with the gutter, and the first and last row
+// of the cursor line. It renders a file only when it is first shown.
+func (m Model) diffContent(loaded *detailLoaded, diff *diffLoaded, width int) (string, int, int) {
+	if len(diff.diff.Files) == 0 {
+		return lipgloss.NewStyle().Foreground(m.tone().muted).Render("This pull request changes no files."), 0, 0
+	}
+
+	if diff.pages == nil || diff.pagesW != width || diff.pagesDark != m.dark {
+		diff.pages = make([]*filePage, len(diff.diff.Files))
+		diff.pagesW, diff.pagesDark = width, m.dark
+	}
+
+	if diff.pages[diff.index] == nil {
+		diff.pages[diff.index] = m.renderFile(diff.diff.Files[diff.index], width)
+	}
+
+	page := diff.pages[diff.index]
+
+	if diff.cursor < 0 {
+		diff.cursor = moveCursor(page.lines, -1, 1, -1)
+	}
+
+	marks := commentMarks(loaded.detail.Thread)
+	colors := m.tone()
+	bar := lipgloss.NewStyle().Foreground(colors.accent).Render("▌")
+	number := lipgloss.NewStyle().Foreground(colors.muted)
+	current := lipgloss.NewStyle().Foreground(colors.accent).Bold(true)
+	first, last := diff.cursor, diff.cursor
+
+	if diff.selecting {
+		first, last = min(diff.anchor, diff.cursor), max(diff.anchor, diff.cursor)
+	}
+
+	rows := strings.Split(page.head, "\n")
+	top, bottom := 0, 0
+
+	for i, line := range page.lines {
+		if !line.code {
+			rows = append(rows, line.rows...)
+
+			continue
+		}
+
+		lead, style := " ", number
+
+		if i >= first && i <= last {
+			lead = bar
+		}
+
+		if i == diff.cursor {
+			style = current
+			top, bottom = len(rows), len(rows)+len(line.rows)-1
+		}
+
+		mark := "  "
+
+		if marks[codeSpot{path: page.path, spot: line.spot}] {
+			mark = "💬"
+		}
+
+		gutter := lead + style.Render(padLeft(strconv.Itoa(line.spot.Line), page.numberWidth)) + " " + mark
+		blank := lead + strings.Repeat(" ", page.numberWidth+1) + "  "
+
+		for j, row := range line.rows {
+			if j > 0 {
+				gutter = blank
+			}
+
+			rows = append(rows, gutter+row)
+		}
+	}
+
+	return strings.Join(rows, "\n"), top, bottom
+}
+
+// moveCursor moves from line from by delta lines of code, and skips hunk
+// headers. When hunk is 0 or more, it stops at the edge of that hunk. It
+// returns -1 when no line of code is found.
+func moveCursor(lines []pageLine, from, delta, hunk int) int {
+	dir := 1
+
+	if delta < 0 {
+		dir, delta = -1, -delta
+	}
+
+	at := from
+
+	for ; delta > 0; delta-- {
+		next := at + dir
+
+		for next >= 0 && next < len(lines) && !lines[next].code {
+			next += dir
+		}
+
+		if next < 0 || next >= len(lines) || (hunk >= 0 && lines[next].hunk != hunk) {
+			break
+		}
+
+		at = next
+	}
+
+	if at >= 0 && at < len(lines) && lines[at].code {
+		return at
+	}
+
+	return -1
+}
+
+// commentMarks is the set of lines that have a code comment. An outdated
+// comment is on a line of an older diff, so it gets no mark.
+func commentMarks(thread []github.Post) map[codeSpot]bool {
+	marks := map[codeSpot]bool{}
+
+	for _, post := range thread {
+		if code := post.Code; code != nil && !code.Outdated && code.Line > 0 {
+			marks[codeSpot{path: code.Path, spot: github.DiffLine{Side: code.Side, Line: code.Line}}] = true
+		}
+	}
+
+	return marks
+}
+
+// renderFile is the name of a changed file, then each hunk of its diff.
+func (m Model) renderFile(file *gitdiff.File, width int) *filePage {
+	muted := lipgloss.NewStyle().Foreground(m.tone().muted)
+	page := &filePage{path: fileName(file), head: m.fileTitle(file, width), numberWidth: lineNumberWidth(file)}
+
+	if file.IsBinary {
+		page.head += "\n\n" + muted.Render("Binary file. gith cannot show it.")
+
+		return page
+	}
+
+	if len(file.TextFragments) == 0 {
+		page.head += "\n\n" + muted.Render("The content of this file did not change.")
+
+		return page
+	}
+
+	code := m.codeStyle()
+	codeWidth := max(1, width-gutterSpace-page.numberWidth-1)
+
+	for hunk, fragment := range file.TextFragments {
+		header := fitLine(muted.Render(strings.TrimSpace(fragment.Header())), width)
+		page.lines = append(page.lines, pageLine{rows: []string{"", header}, hunk: hunk})
+		var oldText, newText []string
+
+		for _, line := range fragment.Lines {
+			text := strings.ReplaceAll(strings.TrimSuffix(line.Line, "\n"), "\t", "    ")
+
+			if line.Old() {
+				oldText = append(oldText, text)
+			}
+
+			if line.New() {
+				newText = append(newText, text)
+			}
+		}
+
+		oldRows := highlightLines(file.OldName, oldText)
+		newRows := highlightLines(file.NewName, newText)
+		oldNumber, newNumber := fragment.OldPosition, fragment.NewPosition
+
+		for _, line := range fragment.Lines {
+			var tokens []chroma.Token
+			spot := github.DiffLine{Side: github.SideNew, Line: int(newNumber)}
+
+			if line.New() {
+				tokens, newRows = newRows[0], newRows[1:]
+				newNumber++
+			}
+
+			if line.Old() {
+				if line.Op == gitdiff.OpDelete {
+					tokens = oldRows[0]
+					spot = github.DiffLine{Side: github.SideOld, Line: int(oldNumber)}
+				}
+
+				oldRows = oldRows[1:]
+				oldNumber++
+			}
+
+			page.lines = append(page.lines, pageLine{
+				rows: m.diffLine(line.Op, tokens, code, codeWidth),
+				code: true,
+				hunk: hunk,
+				spot: spot,
+			})
+		}
+	}
+
+	return page
+}
+
+// fileName is the path of the file in the pull request. A deleted file
+// keeps its old path.
+func fileName(file *gitdiff.File) string {
+	if file.IsDelete {
+		return file.OldName
+	}
+
+	return file.NewName
+}
+
+// lineNumberWidth is the number of digits in the largest line number of the
+// file, on the old side or the new side.
+func lineNumberWidth(file *gitdiff.File) int {
+	var largest int64
+
+	for _, fragment := range file.TextFragments {
+		largest = max(largest, fragment.OldPosition+fragment.OldLines, fragment.NewPosition+fragment.NewLines)
+	}
+
+	return len(strconv.FormatInt(largest, 10))
+}
+
+// codeStyle is the chroma theme that suits the background of the terminal.
+func (m Model) codeStyle() *chroma.Style {
+	if m.dark {
+		return styles.Get("tokyonight-night")
+	}
+
+	return styles.Get("github")
+}
+
+// fileTitle is the file name, what happened to the file, and its counts.
+func (m Model) fileTitle(file *gitdiff.File, width int) string {
+	colors := m.tone()
+	muted := lipgloss.NewStyle().Foreground(colors.muted)
+	var added, deleted int64
+
+	for _, fragment := range file.TextFragments {
+		added += fragment.LinesAdded
+		deleted += fragment.LinesDeleted
+	}
+
+	parts := []string{lipgloss.NewStyle().Bold(true).Render(fileName(file))}
+
+	switch {
+	case file.IsNew:
+		parts = append(parts, muted.Render("new file"))
+
+	case file.IsDelete:
+		parts = append(parts, muted.Render("deleted"))
+
+	case file.IsRename:
+		parts = append(parts, muted.Render("renamed from "+file.OldName))
+	}
+
+	parts = append(parts,
+		lipgloss.NewStyle().Foreground(colors.good).Render(fmt.Sprintf("+%d", added)),
+		lipgloss.NewStyle().Foreground(colors.bad).Render(fmt.Sprintf("−%d", deleted)),
+	)
+
+	return fitLine(strings.Join(parts, muted.Render("  ·  ")), width)
+}
+
+// diffLine colors one line of code and wraps it onto more screen rows. Each
+// row keeps the + or - mark, and a changed line fills the width with its
+// background color.
+func (m Model) diffLine(op gitdiff.LineOp, tokens []chroma.Token, code *chroma.Style, codeWidth int) []string {
+	colors := m.tone()
+	base := lipgloss.NewStyle()
+	mark := lipgloss.NewStyle().Foreground(colors.muted)
+
+	switch op {
+	case gitdiff.OpAdd:
+		base = base.Background(colors.added)
+		mark = mark.Foreground(colors.good).Background(colors.added)
+
+	case gitdiff.OpDelete:
+		base = base.Background(colors.removed)
+		mark = mark.Foreground(colors.bad).Background(colors.removed)
+	}
+
+	var text strings.Builder
+
+	for _, token := range tokens {
+		text.WriteString(tokenStyle(base, code.Get(token.Type)).Render(token.Value))
+	}
+
+	rows := strings.Split(hardwrap(text.String(), codeWidth), "\n")
+
+	for i, row := range rows {
+		fill := base.Render(strings.Repeat(" ", max(0, codeWidth-ansi.StringWidth(row))))
+		rows[i] = mark.Render(op.String()) + row + fill
+	}
+
+	return rows
+}
+
+// hardwrap breaks styled text at the width and keeps each space. A word
+// wrap removes spaces in code. The colors continue on the next line.
+func hardwrap(text string, width int) string {
+	var out strings.Builder
+	writer := lipgloss.NewWrapWriter(&out)
+	_, _ = writer.Write([]byte(ansi.Hardwrap(text, width, true)))
+	_ = writer.Close()
+
+	return out.String()
+}
+
+func tokenStyle(base lipgloss.Style, entry chroma.StyleEntry) lipgloss.Style {
+	style := base
+
+	if entry.Colour.IsSet() {
+		style = style.Foreground(lipgloss.Color(entry.Colour.String()))
+	}
+
+	return style.Bold(entry.Bold == chroma.Yes).Italic(entry.Italic == chroma.Yes)
+}

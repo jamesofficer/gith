@@ -77,15 +77,15 @@ func TestLongDiffLineWrapsAndKeepsItsMark(t *testing.T) {
 	_, panel, _ := strings.Cut(view, postTop(view))
 	var shown string
 
+	// Each code row is the gutter, the + mark, the code with its fill,
+	// then the padding and the frame.
 	for _, line := range strings.Split(panel, "\n") {
-		inner := strings.TrimSpace(strings.Trim(strings.TrimSpace(line), "│"))
-
-		if inner = strings.TrimLeft(inner, "0123456789 "); strings.HasPrefix(inner, "+") {
-			shown += strings.TrimPrefix(inner, "+")
+		if gutter, code, ok := strings.Cut(line, "+"); ok && strings.Trim(gutter, "│▌ 0123456789") == "" {
+			shown += strings.TrimSuffix(code, " │")
 		}
 	}
 
-	if shown != long {
+	if shown = strings.TrimRight(shown, " "); shown != long {
 		t.Fatalf("wrapped line = %q\n%s", shown, screen(m))
 	}
 
@@ -125,40 +125,168 @@ func TestDiffShowsTheLineNumberOfEachSide(t *testing.T) {
 	m := press(t, openSettingPull(t, src), char('d'))
 	view := screen(m)
 
-	for _, want := range []string{"│  9  context", "│ 10 -old", "│ 10 +first", "│ 11 +second"} {
+	for _, want := range []string{"│ ▌ 9    context", "│  10   -old", "│  10   +first", "│  11   +second"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("missing %q:\n%s", want, view)
 		}
 	}
 }
 
-func TestArrowsScrollTheDiffFasterThanJK(t *testing.T) {
+// fortyLines is one new file with the lines line-01 to line-40.
+func fortyLines() string {
 	var body strings.Builder
 
 	for i := 1; i <= 40; i++ {
 		fmt.Fprintf(&body, "+line-%02d\n", i)
 	}
 
+	return "diff --git a/a.go b/a.go\n--- a/a.go\n+++ b/a.go\n@@ -0,0 +1,40 @@\n" + body.String()
+}
+
+// cursorLine is the screen line of the cursor. The bar only marks the
+// cursor when no range is open.
+func cursorLine(m Model) string {
+	return lineWith(screen(m), "▌")
+}
+
+func TestArrowsMoveTheCursorFasterThanJK(t *testing.T) {
 	src := newSource()
-	src.diff = "diff --git a/a.go b/a.go\n--- a/a.go\n+++ b/a.go\n@@ -0,0 +1,40 @@\n" + body.String()
+	src.diff = fortyLines()
 	m := press(t, openSettingPull(t, src), char('d'))
-	m = press(t, m, key(tea.KeyDown))
+
+	if !strings.Contains(cursorLine(m), "line-01") {
+		t.Fatalf("cursor does not start on the first line:\n%s", screen(m))
+	}
+
+	steps := []struct {
+		key  tea.KeyPressMsg
+		want string
+	}{
+		{key(tea.KeyDown), "line-07"},
+		{char('j'), "line-08"},
+		{key(tea.KeyUp), "line-02"},
+		{char('k'), "line-01"},
+		{key(tea.KeyEnd), "line-40"},
+	}
+
+	for _, s := range steps {
+		m = press(t, m, s.key)
+
+		if !strings.Contains(cursorLine(m), s.want) {
+			t.Fatalf("after %s, cursor is not on %s:\n%s", s.key, s.want, screen(m))
+		}
+	}
+
+	assertFillsScreen(t, m)
+}
+
+func TestRangeCommentIsSentForTheSelectedLines(t *testing.T) {
+	src := newSource()
+	src.diff = "diff --git a/a.go b/a.go\n--- a/a.go\n+++ b/a.go\n@@ -9,2 +9,3 @@\n context\n-old\n+first\n+second\n"
+	m := press(t, openSettingPull(t, src), char('d'))
+	m = press(t, m, char('j'))
+	m = press(t, m, char('c'))
+	m = press(t, m, char('j'))
+	m = press(t, m, char('j'))
+
+	if footer := lineWith(screen(m), "esc cancel"); !strings.Contains(footer, "c comment on lines 10–11") {
+		t.Fatalf("footer = %q", footer)
+	}
+
+	if bars := strings.Count(screen(m), "▌"); bars != 3 {
+		t.Fatalf("%d lines are marked, want 3:\n%s", bars, screen(m))
+	}
+
+	m = press(t, m, char('c'))
+
+	if !strings.Contains(screen(m), "Write a comment on a.go lines 10–11") {
+		t.Fatalf("comment box missing:\n%s", screen(m))
+	}
+
+	assertFillsScreen(t, m)
+	m = typeText(t, m, "Merge these.")
+	m = press(t, m, ctrl('s'))
+	want := github.CodeComment{
+		Commit: "head-sha",
+		Path:   "a.go",
+		Start:  github.DiffLine{Side: github.SideOld, Line: 10},
+		End:    github.DiffLine{Side: github.SideNew, Line: 11},
+		Body:   "Merge these.",
+	}
+
+	if len(src.codeComments) != 1 || src.codeComments[0] != want {
+		t.Fatalf("sent %+v", src.codeComments)
+	}
+
+	if line := lineWith(screen(m), "+second"); !strings.Contains(line, "💬") || strings.Count(screen(m), "▌") != 1 {
+		t.Fatalf("sent comment has no mark, or the range is still open:\n%s", screen(m))
+	}
+
+	if m = press(t, m, key(tea.KeyEsc)); !strings.Contains(screen(m), "Adds a setting.") {
+		t.Fatalf("esc did not return to the thread:\n%s", screen(m))
+	}
+}
+
+func TestDoubleCCommentsOnOneLine(t *testing.T) {
+	src := newSource()
+	src.diff = twoFiles
+	m := press(t, openSettingPull(t, src), char('d'))
+	m = press(t, press(t, m, char('c')), char('c'))
+	press(t, typeText(t, m, "Why?"), ctrl('s'))
+	line := github.DiffLine{Side: github.SideNew, Line: 1}
+
+	if len(src.codeComments) != 1 || src.codeComments[0].Start != line || src.codeComments[0].End != line {
+		t.Fatalf("sent %+v", src.codeComments)
+	}
+}
+
+func TestEscCancelsTheRangeBeforeItLeavesTheDiff(t *testing.T) {
+	src := newSource()
+	src.diff = twoFiles
+	m := press(t, openSettingPull(t, src), char('d'))
+	m = press(t, press(t, m, char('c')), key(tea.KeyEsc))
+
+	if strings.Contains(screen(m), "esc cancel") || !strings.Contains(screen(m), "+next := 2") {
+		t.Fatalf("esc did not cancel the range:\n%s", screen(m))
+	}
+
+	if m = press(t, m, key(tea.KeyEsc)); !strings.Contains(screen(m), "Adds a setting.") {
+		t.Fatalf("second esc did not leave the diff:\n%s", screen(m))
+	}
+}
+
+func TestRangeStaysInsideOneHunk(t *testing.T) {
+	src := newSource()
+	src.diff = "diff --git a/a.go b/a.go\n--- a/a.go\n+++ b/a.go\n@@ -1 +1 @@\n-a\n+b\n@@ -20 +20 @@\n-c\n+d\n"
+	m := press(t, openSettingPull(t, src), char('d'))
+	m = press(t, press(t, m, char('c')), key(tea.KeyDown))
+
+	if footer := lineWith(screen(m), "esc cancel"); !strings.Contains(footer, "lines 1–1") {
+		t.Fatalf("range left its hunk: %q\n%s", footer, screen(m))
+	}
+
+	m = press(t, press(t, m, key(tea.KeyEsc)), key(tea.KeyDown))
+
+	if !strings.Contains(cursorLine(m), "+d") {
+		t.Fatalf("without a range, the cursor did not move to the next hunk:\n%s", screen(m))
+	}
+}
+
+func TestExistingCodeCommentsAreMarked(t *testing.T) {
+	src := newSource()
+	src.diff = twoFiles
+	src.pulls[0].Comments = 0
+	m := openSettingPull(t, src)
+	detail := src.details[4]
+	detail.Thread = []github.Post{
+		{Author: "sam", Body: "Hm.", CreatedAt: when, Code: &github.CodeThread{Path: "timer.go", Line: 2, Side: github.SideOld}},
+		{Author: "sam", Body: "Old.", CreatedAt: when, Code: &github.CodeThread{Path: "timer.go", Line: 2, Side: github.SideNew, Outdated: true}},
+	}
+	src.details[4] = detail
+	m = press(t, press(t, m, char('r')), char('d'))
 	view := screen(m)
 
-	if strings.Contains(view, "line-03") || !strings.Contains(view, "line-04") {
-		t.Fatalf("down did not scroll 6 lines:\n%s", view)
-	}
-
-	m = press(t, m, char('j'))
-	view = screen(m)
-
-	if strings.Contains(view, "line-04") || !strings.Contains(view, "line-05") {
-		t.Fatalf("j did not scroll 1 line:\n%s", view)
-	}
-
-	m = press(t, m, key(tea.KeyUp))
-
-	if !strings.Contains(screen(m), "line-01") {
-		t.Fatalf("up did not scroll back 6 lines:\n%s", screen(m))
+	if !strings.Contains(lineWith(view, "-old := 1"), "💬") || strings.Contains(lineWith(view, "+next := 2"), "💬") {
+		t.Fatalf("marks are wrong:\n%s", view)
 	}
 }

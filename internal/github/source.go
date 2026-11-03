@@ -62,10 +62,40 @@ type Post struct {
 	Code *CodeThread
 }
 
+// Side is the side of a diff that a line number belongs to.
+type Side string
+
+const (
+	// SideOld holds removed lines, with numbers from the base branch.
+	SideOld Side = "LEFT"
+
+	// SideNew holds added lines and lines that did not change.
+	SideNew Side = "RIGHT"
+)
+
+// DiffLine is one line of a diff, found by its side and its number.
+type DiffLine struct {
+	Side Side
+	Line int
+}
+
+// CodeComment is a new comment on one line or a range of lines in a diff.
+type CodeComment struct {
+	// Commit is the head commit of the diff that the lines come from.
+	Commit string
+	Path   string
+
+	// Start and End are the same line for a comment on one line.
+	Start DiffLine
+	End   DiffLine
+	Body  string
+}
+
 // CodeThread is the place of a code comment in the diff and its replies.
 type CodeThread struct {
 	Path string
 	Line int
+	Side Side
 
 	// Hunk is the part of the diff that the comment is on.
 	Hunk     string
@@ -103,7 +133,8 @@ type Detail struct {
 type Source interface {
 	List(ctx context.Context, kind Kind) ([]Item, error)
 	Detail(ctx context.Context, kind Kind, number int) (Detail, error)
-	Diff(ctx context.Context, number int) ([]*gitdiff.File, error)
+	Diff(ctx context.Context, number int) (PullDiff, error)
+	CommentOnCode(ctx context.Context, number int, comment CodeComment) (Post, error)
 	Comment(ctx context.Context, number int, body string) (Post, error)
 	Browse(ctx context.Context, number int) error
 }
@@ -298,7 +329,7 @@ const threadQuery = `query($owner: String!, $name: String!, $number: Int!, $afte
     pullRequest(number: $number) {
       reviewThreads(first: 50, after: $after) {
         nodes {
-          path line originalLine isResolved isOutdated
+          path line originalLine diffSide isResolved isOutdated
           comments(first: 100) {
             totalCount
             nodes { author { login } body createdAt state diffHunk }
@@ -365,21 +396,82 @@ func (c CLI) Comment(ctx context.Context, number int, body string) (Post, error)
 	return parseCreatedPost(out)
 }
 
-// Diff returns the changed files of a pull request, in the order of the diff.
-func (c CLI) Diff(ctx context.Context, number int) ([]*gitdiff.File, error) {
-	out, err := c.run(ctx, nil, "pr", "diff", strconv.Itoa(number), "-R", c.repo.flag(), "--color", "never")
+// PullDiff is the diff of a pull request and the commit that it comes from.
+type PullDiff struct {
+	Commit string
+
+	// Files holds the changed files, in the order of the diff.
+	Files []*gitdiff.File
+}
+
+// Diff returns the changed files of a pull request. It reads the head commit
+// first. Then a push during the load makes a later comment fail, and it does
+// not put the comment on the wrong line.
+func (c CLI) Diff(ctx context.Context, number int) (PullDiff, error) {
+	out, err := c.run(ctx, nil, "pr", "view", strconv.Itoa(number), "-R", c.repo.flag(), "--json", "headRefOid")
 
 	if err != nil {
-		return nil, err
+		return PullDiff{}, err
+	}
+
+	commit, err := parseHeadCommit(out)
+
+	if err != nil {
+		return PullDiff{}, err
+	}
+
+	out, err = c.run(ctx, nil, "pr", "diff", strconv.Itoa(number), "-R", c.repo.flag(), "--color", "never")
+
+	if err != nil {
+		return PullDiff{}, err
 	}
 
 	files, _, err := gitdiff.Parse(bytes.NewReader(out))
 
 	if err != nil {
-		return nil, fmt.Errorf("could not read the diff: %w", err)
+		return PullDiff{}, fmt.Errorf("could not read the diff: %w", err)
 	}
 
-	return files, nil
+	return PullDiff{Commit: commit, Files: files}, nil
+}
+
+// CommentOnCode posts a comment on one line or a range of lines of a pull
+// request. GitHub sends it at once, not as part of a review.
+func (c CLI) CommentOnCode(ctx context.Context, number int, comment CodeComment) (Post, error) {
+	body := strings.TrimSpace(comment.Body)
+
+	if body == "" {
+		return Post{}, errors.New("comment is empty")
+	}
+
+	payload := map[string]any{
+		"body":      body,
+		"commit_id": comment.Commit,
+		"path":      comment.Path,
+		"line":      comment.End.Line,
+		"side":      comment.End.Side,
+	}
+
+	if comment.Start != comment.End {
+		payload["start_line"] = comment.Start.Line
+		payload["start_side"] = comment.Start.Side
+	}
+
+	data, err := json.Marshal(payload)
+
+	if err != nil {
+		return Post{}, err
+	}
+
+	path := fmt.Sprintf("repos/%s/pulls/%d/comments", c.repo.FullName(), number)
+	args := c.apiArgs("--method", "POST", "--input", "-", "-H", "Content-Type:application/json", path)
+	out, err := c.run(ctx, data, args...)
+
+	if err != nil {
+		return Post{}, err
+	}
+
+	return parseCreatedCodePost(out)
 }
 
 // Browse opens an issue or a pull request in the web browser.

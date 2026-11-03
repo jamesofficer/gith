@@ -95,6 +95,16 @@ func window(cursor, count, height int) (int, int) {
 	return start, start + height
 }
 
+// rowsInView is the smallest change to the scroll offset that shows the rows
+// from top to bottom. When they do not all fit, top shows.
+func rowsInView(offset, height, top, bottom int) int {
+	if bottom >= offset+height {
+		offset = bottom - height + 1
+	}
+
+	return min(offset, top)
+}
+
 // step moves the cursor by delta and keeps it in 0 to n-1.
 func step(cursor, delta, n int) int {
 	if n == 0 {
