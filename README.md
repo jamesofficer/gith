@@ -46,13 +46,16 @@ gith -L 50
 | `←` `→` | Switch between issues and pull requests in the list |
 | `↑` `↓` | Move in the list, or move through the thread of the open item |
 | `enter` | Open the selected item |
+| `/` | Search the list by title, author, assignee, or number |
 | `b` | Open the selected item in your browser |
 | `r` | Load the lists or the open item again |
 | `c` | Write a comment on the open item |
 | `d` | Show the diff of the open pull request |
 | `ctrl+s` | Send the comment (`ctrl+enter` also works in terminals that support it) |
-| `esc` | Close the comment box, or return to the list |
+| `esc` | Close the comment box, return to the list, or clear the search |
 | `q` | Quit from the list (`ctrl+c` quits from all screens) |
+
+In the search, each word must be in the title, the author, or an assignee. Capitals do not matter. A number such as `12` or `#12` finds the items whose number starts with it. The search filters both tabs, and the tabs show the count of matches. While you type, `↑` `↓` move in the list and `enter` opens the selected item. The search looks only in the loaded items. Use `-L` to load more.
 
 In an open item, one post fills the screen. The thread holds the description, the comments, the reviews, and the comments on lines of code, oldest first. A comment on code shows its file, its line, and the diff above it. Its replies go under it with an indent. The top of the post frame shows the place in the thread, such as `4 of 7`. `page up`, `page down`, `home`, and `end` scroll inside that post.
 

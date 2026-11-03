@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"charm.land/bubbles/v2/spinner"
+	"charm.land/bubbles/v2/textinput"
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -14,13 +15,6 @@ import (
 )
 
 const requestTimeout = 30 * time.Second
-
-type list struct {
-	items   []github.Item
-	cursor  int
-	loading bool
-	err     error
-}
 
 type itemKey struct {
 	kind   github.Kind
@@ -74,6 +68,9 @@ type Model struct {
 	issues list
 	pulls  list
 
+	// search filters both lists. An empty search shows all items.
+	search textinput.Model
+
 	// open is nil on the list screen.
 	open    *openItem
 	problem string
@@ -116,6 +113,7 @@ func New(source github.Source, repo string) Model {
 		dark:     true,
 		kind:     github.KindIssue,
 		issues:   list{loading: true},
+		search:   newSearchBox(),
 		pulls:    list{loading: true},
 		cache:    map[itemKey]github.Detail{},
 		diffs:    map[itemKey]github.PullDiff{},
@@ -152,6 +150,7 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		m.search.SetWidth(max(1, m.width-lipgloss.Width(m.search.Prompt)-1))
 
 		return m, nil
 
@@ -211,6 +210,13 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 		return m, cmd
 	}
 
+	if m.open == nil && m.search.Focused() {
+		var cmd tea.Cmd
+		m.search, cmd = m.search.Update(msg)
+
+		return m, cmd
+	}
+
 	return m, nil
 }
 
@@ -221,6 +227,10 @@ func (m Model) onKey(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 
 	m.problem = ""
 	key := msg.String()
+
+	if m.open == nil && m.search.Focused() {
+		return m.onSearchKey(msg)
+	}
 
 	if key == "ctrl+c" || (key == "q" && m.open == nil) {
 		return m, tea.Quit
@@ -238,10 +248,10 @@ func (m Model) onListKey(key string) (Model, tea.Cmd) {
 
 	switch key {
 	case "up":
-		active.cursor = step(active.cursor, -1, len(active.items))
+		active.move(-1)
 
 	case "down":
-		active.cursor = step(active.cursor, 1, len(active.items))
+		active.move(1)
 
 	case "left", "right":
 		m.kind = other(m.kind)
@@ -256,6 +266,12 @@ func (m Model) onListKey(key string) (Model, tea.Cmd) {
 
 	case "r":
 		return m.refreshLists()
+
+	case "/":
+		return m.startSearch()
+
+	case "esc":
+		return m.clearSearch(), nil
 	}
 
 	return m, nil
@@ -419,8 +435,7 @@ func (m Model) applyList(msg listMsg) Model {
 	l := m.listOf(msg.kind)
 	l.loading = false
 	l.err = msg.err
-	l.items = msg.items
-	l.cursor = step(l.cursor, 0, len(l.items))
+	l.setItems(msg.items)
 
 	return m
 }
@@ -428,11 +443,7 @@ func (m Model) applyList(msg listMsg) Model {
 func (m Model) setCommentCount(key itemKey, count int) Model {
 	l := m.listOf(key.kind)
 
-	for i := range l.items {
-		if l.items[i].Number == key.number {
-			l.items[i].Comments = count
-		}
-	}
+	l.setComments(key.number, count)
 
 	if m.open != nil && m.open.key == key {
 		m.open.summary.Comments = count
@@ -563,14 +574,6 @@ func (m *Model) listOf(kind github.Kind) *list {
 	}
 
 	return &m.issues
-}
-
-func (l list) current() (github.Item, bool) {
-	if l.cursor < 0 || l.cursor >= len(l.items) {
-		return github.Item{}, false
-	}
-
-	return l.items[l.cursor], true
 }
 
 func other(kind github.Kind) github.Kind {
