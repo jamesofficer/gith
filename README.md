@@ -33,10 +33,10 @@ gith -R owner/name
 gith -R github.example.com/owner/name
 ```
 
-Load more than 30 open items:
+Load more than 50 open items:
 
 ```bash
-gith -L 50
+gith -L 100
 ```
 
 ## Keys

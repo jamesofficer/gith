@@ -18,7 +18,7 @@ import (
 )
 
 // DefaultLimit is the number of open items to load when no limit is set.
-const DefaultLimit = 30
+const DefaultLimit = 50
 
 // maxPage is the largest page that the GitHub API returns.
 const maxPage = 100
